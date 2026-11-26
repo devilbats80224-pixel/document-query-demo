@@ -1,0 +1,5 @@
+{"line_id": "L1", "date": "2026-11-20", "output_qty": "1000", "defect_count": "12", "defect_rate": "1.2%"}
+{"line_id": "L1", "date": "2026-11-21", "output_qty": "2000", "defect_count": "90", "defect_rate": "4.5%"}
+{"line_id": "L2", "date": "2026-11-20", "output_qty": "1000", "defect_count": "8", "defect_rate": "0.8%"}
+{"line_id": "L2", "date": "2026-11-21", "output_qty": "1000", "defect_count": "9", "defect_rate": "0.9%"}
+{"line_id": "L2", "date": "2026-11-22", "output_qty": "100", "defect_count": "120", "defect_rate": "120%"}
