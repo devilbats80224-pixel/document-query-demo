@@ -14,7 +14,7 @@ class VercelCloudTests(TestCase):
         base=Path(__file__).resolve().parents[1]
         config=tomllib.loads((base/"pyproject.toml").read_text())
         self.assertEqual(config["tool"]["vercel"]["entrypoint"],"vercel_app:app")
-        self.assertIn("fastapi", (base/"requirements.txt").read_text())
+        self.assertTrue(any(dep.startswith("fastapi==") for dep in config["project"]["dependencies"]))
         with TestClient(vercel_app.app) as client:
             self.assertEqual(client.get("/health").json()["mode"],"vercel_cloud")
             page=client.get("/knowledge",params={"q":"DEMO-100 E-402"}).text
