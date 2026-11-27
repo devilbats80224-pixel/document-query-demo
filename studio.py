@@ -1023,7 +1023,7 @@ def agent_chat(question,source,work,sheet,result,model="bm25",has_upload=False,*
     body+='<p><a class="work-button" href="/agent/calc">讓 Agent 先規劃算式</a></p>'
     if result:
         body+=f'<p class="chat-question">{query}</p>'
-        body+=f'<div class="plain-step"><div><small>查詢結果（非模型生成）</small><p>{escape(result["answer"])}</p></div></div>'
+        body+=f'<div class="plain-step agent-result"><div><small>查詢結果（非模型生成）</small><p>{escape(result["answer"])}</p></div></div>'
         body+=fold("查看這次使用的工具",f'<p>{escape(result["tool"])}</p>')
     body+=f'<form class="agent-composer" action="/agent"><label for="agent-source">資料來源</label><select id="agent-source" name="source">{src}</select>{model_select}{sheet_field}<small class="agent-tool-note">關鍵字檢索（BM25 排名）比對詞彙；字元向量（TF-IDF）比對字元組；Qwen3 Embedding 比對語意。表格與欄位擷取不使用這些檢索方式。</small><div class="search-input"><label for="agent-q">問題</label><input name="q" id="agent-q" maxlength="250" required value="{query}" placeholder="輸入想查、擷取或計算的內容"><button>送出</button></div></form><details><summary>內建示範（選用）</summary><div class="samples">{ex}</div></details></section>'
     evidence=result["evidence"] if result else []
