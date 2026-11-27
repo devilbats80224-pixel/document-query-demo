@@ -69,11 +69,13 @@ try {
   const screenshot=async name=>writeFileSync(join(evidence,name+'.png'),
     Buffer.from((await cmd('Page.captureScreenshot',{format:'png'})).data,'base64'));
   await cmd('Page.navigate',{url:base+'/knowledge?source=local&mode=bm25'});
-  await until(()=>run("!!document.querySelector('#local-upload button')"),'upload page');
-  const doc=(await cmd('DOM.getDocument')).root.nodeId;
-  const file=(await cmd('DOM.querySelector',{nodeId:doc,selector:'#doc-files'})).nodeId;
-  assert(file);
-  await cmd('DOM.setFileInputFiles',{nodeId:file,files:[join(root,'demo/docs/PDF-200.pdf')]});
+  await until(()=>run("document.readyState==='complete' && location.pathname==='/knowledge' && !!document.querySelector('#local-upload button')"),'upload page');
+  await until(async ()=>{
+    const file=(await cmd('Runtime.evaluate',{expression:"document.querySelector('#doc-files')"})).result.objectId;
+    if(!file) return false;
+    await cmd('DOM.setFileInputFiles',{objectId:file,files:[join(root,'demo/docs/PDF-200.pdf')]});
+    return run("document.querySelector('#doc-files').files.length===1");
+  },'stable browser file input');
   await run("document.querySelector('#local-upload button').click()");
   await until(()=>run("document.querySelector('.library-list')?.textContent.includes('PDF-200.pdf')"),'PDF indexed');
   writes.upload='PDF-200.pdf indexed';
