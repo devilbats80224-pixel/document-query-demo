@@ -25,12 +25,16 @@ let app, browser, sock;
 try {
   assert(chrome && typeof WebSocket === 'function', 'Need Chrome and Node 22+');
   let log='';
+  let base=process.env.VERIFY_BASE_URL;
+  if(!base) {
   app=spawn(process.env.DEMO_PYTHON || 'python3',['-B','-m','uvicorn','api_fastapi:app','--host','127.0.0.1','--port','0'],{
     cwd:root,env:{PATH:process.env.PATH,HOME:temp,PYTHONNOUSERSITE:'1'},stdio:['ignore','pipe','pipe']
   });
   for(const stream of [app.stdout,app.stderr]) stream.on('data',chunk=>log+=chunk);
   app.on('error',e=>log+=e.message);
-  const base=await until(()=>log.match(/Uvicorn running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1], 'app startup');
+  base=await until(()=>log.match(/Uvicorn running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1], 'app startup');
+  }
+  assert.match(base,/^https?:\/\/127\.0\.0\.1:\d+$/,'Only inspect a loopback verification target');
   const health=await (await fetch(base+'/health')).json();
   assert.equal(health.mode,'local_offline');
   browser=spawn(chrome,['--headless','--no-first-run','--no-default-browser-check','--disable-background-networking',
@@ -65,11 +69,13 @@ try {
   const screenshot=async name=>writeFileSync(join(evidence,name+'.png'),
     Buffer.from((await cmd('Page.captureScreenshot',{format:'png'})).data,'base64'));
   await cmd('Page.navigate',{url:base+'/knowledge?source=local&mode=bm25'});
-  await until(()=>run("!!document.querySelector('#local-upload button')"),'upload page');
-  const doc=(await cmd('DOM.getDocument')).root.nodeId;
-  const file=(await cmd('DOM.querySelector',{nodeId:doc,selector:'#doc-files'})).nodeId;
-  assert(file);
-  await cmd('DOM.setFileInputFiles',{nodeId:file,files:[join(root,'demo/docs/PDF-200.pdf')]});
+  await until(()=>run("document.readyState==='complete' && location.pathname==='/knowledge' && !!document.querySelector('#local-upload button')"),'upload page');
+  await until(async ()=>{
+    const file=(await cmd('Runtime.evaluate',{expression:"document.querySelector('#doc-files')"})).result.objectId;
+    if(!file) return false;
+    await cmd('DOM.setFileInputFiles',{objectId:file,files:[join(root,'demo/docs/PDF-200.pdf')]});
+    return run("document.querySelector('#doc-files').files.length===1");
+  },'stable browser file input');
   await run("document.querySelector('#local-upload button').click()");
   await until(()=>run("document.querySelector('.library-list')?.textContent.includes('PDF-200.pdf')"),'PDF indexed');
   writes.upload='PDF-200.pdf indexed';

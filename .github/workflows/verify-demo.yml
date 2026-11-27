@@ -21,6 +21,7 @@ jobs:
         with:
           node-version: '22'
       - run: python -m pip install -r requirements-optional.txt
+      - run: bash -n scripts/deploy-mac-docker.sh
       - run: python -B -m unittest discover -s tests -v
       - run: node scripts/verify-browser.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -29,4 +30,38 @@ jobs:
           name: document-browser-evidence
           path: verification-evidence/
           if-no-files-found: ignore
+          retention-days: 7
+  docker:
+    name: ARM64 Docker verification
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build and verify the demo container offline
+        run: |
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "document-query-demo:$GITHUB_SHA" .
+          docker run -d --name demo-test --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m "document-query-demo:$GITHUB_SHA"
+          trap 'docker logs demo-test; docker rm -f demo-test' EXIT
+          for n in $(seq 1 30); do
+            if docker exec demo-test python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8775/health', timeout=1)"; then break; fi
+            sleep 1
+          done
+          docker exec -i demo-test python -B - < scripts/smoke-docker.py
+      - name: Package the same tested ARM64 main image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p dist
+          docker save "document-query-demo:$GITHUB_SHA" | gzip -1 > dist/document-query-demo-arm64.tar.gz
+          docker image inspect --format '{{.Id}}' "document-query-demo:$GITHUB_SHA" > dist/IMAGE_ID
+          printf '%s\n' "$GITHUB_SHA" > dist/COMMIT
+          (cd dist && sha256sum document-query-demo-arm64.tar.gz IMAGE_ID COMMIT > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: document-query-demo-arm64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7
