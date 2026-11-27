@@ -17,3 +17,10 @@ The optional Mac model servers remain at loopback; the container connects
 through Docker Desktop's host alias using a read-only local token mount.
 No token or model weights are part of the image or CI. The upload library
 remains in memory and resets on container restart.
+
+## 靜態檢查
+
+PR 的既有必過工作會跑 `ruff check .`（全庫 Python 語法與未定義名稱等高信號錯誤）及
+`pyright --project pyrightconfig.json`（目前指定的文件讀取、表格品質、模型設定和映像識別模組，並非全庫）。
+本機使用 Ruff 0.17.6 與 Pyright 1.1.414 即可重跑。擴大型別檢查範圍時請更新
+`pyrightconfig.json`，不要用型別檢查取代既有測試或 Docker 驗證。

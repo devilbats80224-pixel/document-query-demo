@@ -1,5 +1,6 @@
 """The exam practice studio. All sources are deliberately synthetic."""
 from collections import Counter
+from decimal import Decimal
 from html import escape
 from math import hypot, log
 from pathlib import Path

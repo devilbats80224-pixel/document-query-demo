@@ -1,0 +1,12 @@
+{
+  "include": [
+    "document_io.py",
+    "local_library.py",
+    "local_table.py",
+    "model_settings.py",
+    "table_quality.py",
+    "scripts/check-oci-image.py"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}
