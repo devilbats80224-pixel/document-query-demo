@@ -16,3 +16,4 @@ wheelhouse/
 
 # Isolated verification output
 verification-evidence/
+.vercel/
