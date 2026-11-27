@@ -34,6 +34,8 @@ jobs:
       - run: bash -n scripts/deploy-mac-docker.sh
       - run: python -B -m unittest discover -s tests -v
       - run: node scripts/verify-browser.mjs
+      - name: Verify original workbench on the cloud entrypoint
+        run: VERIFY_CLOUD_FIXTURE=1 VERIFY_EVIDENCE=verification-evidence/cloud node scripts/verify-browser.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

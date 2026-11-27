@@ -7,6 +7,7 @@ from threading import Lock
 from time import monotonic
 import re
 
+import cloud_sessions
 from document_io import TEXT_EXTS
 from retrieval import load_docs
 
@@ -37,6 +38,11 @@ def _prune(now):
         if now-row[0]>=TTL:_sessions.pop(sid,None)
 
 def snapshot(sid):
+    if cloud_sessions.request_mode.get():
+        store=cloud_sessions.backend()
+        docs=(store.read("documents",sid) if store else None) or {}
+        return ([{"name":name,"chunks":len(chunks)} for name,chunks in docs.items()],
+                [row for chunks in docs.values() for row in chunks])
     now=monotonic()
     with _lock:
         _prune(now)
@@ -46,6 +52,18 @@ def snapshot(sid):
         return [{"name":name,"chunks":len(chunks)} for name,chunks in docs.items()], [row for chunks in docs.values() for row in chunks]
 
 def add(sid,name,chunks):
+    store=cloud_sessions.active()
+    if store is not None:
+        if store.key("documents",sid) is None or store.read("documents",sid) is None:
+            sid=store.new_id()
+        def change(existing):
+            docs=dict(existing or {})
+            if name in docs:raise ValueError("duplicate_name")
+            if len(docs)>=DOC_LIMIT or sum(map(len,docs.values()))+len(chunks)>CHUNK_LIMIT:
+                raise ValueError("library_full")
+            return {**docs,name:chunks}
+        store.update("documents",sid,change)
+        return sid
     now=monotonic()
     with _lock:
         _prune(now)
@@ -62,9 +80,25 @@ def add(sid,name,chunks):
         return sid
 
 def clear(sid):
+    store=cloud_sessions.active()
+    if store is not None:
+        store.delete("documents",sid)
+        return
     with _lock:_sessions.pop(sid,None)
 
 def remove(sid,name):
+    store=cloud_sessions.active()
+    if store is not None:
+        if store.read("documents",sid) is None:return False
+        class Missing(Exception):pass
+        def change(existing):
+            docs=dict(existing or {})
+            if name not in docs:raise Missing
+            docs.pop(name)
+            return docs
+        try:store.update("documents",sid,change)
+        except Missing:return False
+        return True
     with _lock:
         _prune(monotonic())
         row=_sessions.get(sid)

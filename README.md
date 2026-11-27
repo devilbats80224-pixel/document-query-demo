@@ -36,8 +36,9 @@ PR 的既有必過工作會跑 `ruff check .`（全庫 Python 語法與未定義
 
 Vercel 專案用同一個 GitHub 儲存庫，Root Directory 保持根目錄，框架選 **FastAPI**。按 [Vercel FastAPI 官方說明](https://vercel.com/docs/frameworks/backend/fastapi) 由 `pyproject.toml` 指到 `vercel_app:app`，依賴鎖定在同一份 `pyproject.toml` 的 `[project]`。Mac Docker 仍以原本的 `api_fastapi:app` 啟動，不吃這些設定。合併 PR 的 GitHub Actions 須先全綠，再用 Vercel 對應 commit 的部署驗收；預覽先不帶任何金鑰。
 
-- 公開入口只查內建合成文件和示範製造資料，**不接收上傳、不儲存文件、不連 Mac 本機模型**。完整工作台仍在 Mac Docker。
-- 不設定以下環境變數也能展示公開版；擁有者聊天預設關閉，不會向模型供應商送出請求。
+- 雲端和 Mac 共用原版工作台、導航與九個頁面。雲端不直連 Mac 的模型；本地模型、離線操作仍在 Mac。訪客可以用工作台和示範資料，但未登入不可共用網站擁有者的模型額度。
+- 在 Vercel Marketplace 將免費的 Upstash Redis 連到這個專案，讓瀏覽器重新整理及雲端執行個體切換後仍能讀回。支援整組 `KV_REST_API_URL`／`KV_REST_API_TOKEN` 或整組 `UPSTASH_REDIS_REST_URL`／`UPSTASH_REDIS_REST_TOKEN`，不可彼此混用。只暫存解析後的工作台資料，原始檔不寫入 Redis，各瀏覽器隔離、兩小時到期。沒配置時上傳選項會顯示原因，不會假裝已存。
+- Vercel 版每個檔案 4 MB，避免超過 Vercel Functions 的 4.5 MB 請求限制；Mac 版原有上限不變。
 - 要啟用私人模型區，在 Vercel 專案 **Settings → Environment Variables** 的 **Production** 環境加入：
   - `LITEON_CHAT_PROVIDERS` = `gemini`、`openai` 或 `openai,gemini`
   - 選 Gemini 時，`LITEON_GEMINI_API_KEY` = 自己在 [Google AI Studio](https://aistudio.google.com/apikey) 建立的 API 金鑰（用 Secret/Sensitive 設定）
@@ -45,4 +46,4 @@ Vercel 專案用同一個 GitHub 儲存庫，Root Directory 保持根目錄，�
   - `DEMO_CLOUD_OWNER_PASSWORD` = 另外產生的高熵隨機密碼，32–128 位英數、`_` 或 `-`，例如自行在終端執行 `openssl rand -hex 32` 產生。**不可與任一模型金鑰相同。**
 - 重新部署該 Production 版本後，以 HTTPS 開 `/owner/`，使用固定帳號 `owner` 和自己設定的擁有者密碼登入。**不要把模型金鑰輸入網頁或貼到對話、GitHub、CI 紀錄。**金鑰只由伺服器傳給各自的模型供應商；不要分享擁有者密碼，也不要在共享裝置保存瀏覽器登入資料。
 - 擁有者登入後才會讀取可選模型，選定後送出一則測試問題才會生成；頁面會顯示實際回傳的模型。生成會使用所選供應商帳戶額度，建議由擁有者設定適當配額／預算警示。
-- 部署後驗收：`GET /health` 顯示 `mode: vercel_cloud`；`/knowledge?q=DEMO-100+E-402` 有可引用片段；訪客送 `POST /owner/chat` 時應為 404（未設擁有者密碼）或 401（已設但未登入），不能消耗 API 額度。
+- 部署後驗收：`GET /health` 顯示 `mode: vercel_cloud`；`/knowledge?q=DEMO-100+E-402` 有可引用片段；用合成檔執行上傳、重新整理、查詢與清除，確認獨立瀏覽器看不到檔案；訪客送 `POST /models/chat` 必須是 401，不能消耗 API 額度。

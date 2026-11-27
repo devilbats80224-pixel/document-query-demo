@@ -14,6 +14,7 @@ import retrieval
 import spec_extract
 import exam_cases
 import local_models
+import cloud_sessions
 import figma_theme
 
 DEMO=Path(__file__).resolve().parent/"demo"
@@ -138,15 +139,29 @@ def layout(path,title,desc,body):
     format_row=f'<div class="formats" aria-label="支援格式"><small>支援格式</small>{formats}</div>' if formats else ""
     nav=figma_theme.navigation(TRACKS,path)
     section=next((label for url,_,label in TRACKS if url==path),"工作台")
+    cloud=cloud_sessions.request_mode.get()
+    upload_available=cloud_sessions.backend() is not None if cloud else True
+    environment="Vercel 雲端版" if cloud else "Mac 本機展示"
+    header_env=environment if cloud else "本機展示環境"
+    storage_note=("這個版本會在雲端暫存已解析資料，單檔上限 4 MB；請勿上傳私人或機密文件。"
+                  if upload_available else "雲端上傳目前未設定儲存空間；仍可使用各頁面的內建練習。")
+    notice=f'<p role="status" class="result-note">{storage_note}</p>' if cloud else ""
+    owner_link='<a href="/owner/">私人模型區登入</a>' if cloud else ""
+    disable_uploads="""<script>
+document.querySelectorAll('input[type=file]').forEach(input=>{
+    input.disabled=true;
+    input.closest('form')?.querySelectorAll('button[type=submit],button:not([type]),[data-upload-open]').forEach(button=>button.disabled=true);
+});
+</script>""" if not upload_available else ""
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}｜文件工作台</title><style>{CSS}{figma_theme.CSS}</style></head><body><div class="shell" data-ui="figma-make">
 <nav class="side" aria-label="展示模組">
 <a class="brand" href="/workspace" aria-label="回到工作台總覽">{figma_theme.MARK}<div><strong>文件工作台</strong><small>KNOWLEDGE OPS</small></div></a>
 <span class="nav-caption">工作區</span>{nav}
-<div class="sidebar-note"><span class="environment-dot"></span><div><strong>Mac 本機展示</strong><small>可切換內建練習與上傳資料</small></div></div></nav>
-<div class="main-wrap"><header class="topbar"><span><i class="environment-dot"></i>本機展示環境</span><a href="/guide">使用說明</a></header>
+<div class="sidebar-note"><span class="environment-dot"></span><div><strong>{environment}</strong><small>可切換內建練習與上傳資料</small></div></div></nav>
+<div class="main-wrap"><header class="topbar"><span><i class="environment-dot"></i>{header_env}</span>{owner_link}<a href="/guide">使用說明</a></header>
 <main><header class="hero"><div class="eyebrow">{escape(section)}</div><h1>{escape(title)}</h1><p>{escape(desc)}</p></header>
-{figma_theme.rail(path)}{format_row}{process_flow(path)}{body}</main></div></div>{CLEAR_UPLOADS_SCRIPT}</body></html>"""
+{notice}{figma_theme.rail(path)}{format_row}{process_flow(path)}{body}</main></div></div>{CLEAR_UPLOADS_SCRIPT}{disable_uploads}</body></html>"""
 
 def workspace(docs=(),table_names=()):
     icon=figma_theme.icon
@@ -244,7 +259,7 @@ async function send(items){
       try{
         const r=await fetch('/knowledge/files',{method:'POST',headers:{'X-Demo-Local':'1','X-Demo-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'},body:f});
         const result=await r.json();
-        if(r.ok){ok++;}else{fail.push(f.name+'：'+(result.review_pages?.length?'第 '+result.review_pages.join('、')+' 頁需核對。':'')+(msg[result.detail]||'未能讀取文件。'));}
+        if(r.ok){ok++;}else{fail.push(f.name+'：'+(result.review_pages?.length?'第 '+result.review_pages.join('、')+' 頁需核對。':'')+(msg[result.detail]||([413,503].includes(r.status)&&typeof result.detail==='string'?result.detail:'未能讀取文件。')));}
       }catch{fail.push(f.name+'：目前連不到本機。');}
     }
     if(ok){
@@ -316,7 +331,12 @@ document.querySelectorAll('[data-knowledge-example]').forEach(link=>link.addEven
 }));
 </script>"""
 
+def max_upload_display():
+    return "4 MB" if cloud_sessions.request_mode.get() else "5 MB"
+
+
 def library_panel(docs,source,mode):
+    label_mode="雲端工作階段" if cloud_sessions.request_mode.get() else "MAC 本機 · 不連外"
     switch="".join(f'<a class="switch'+(' active' if key==source else '')+
                    f'" href="/knowledge?source={key}&amp;mode={mode}">{label}</a>'
                    for key,label in (("demo","內建練習"),("local","我的暫存文件")))
@@ -325,14 +345,14 @@ def library_panel(docs,source,mode):
     listed=('<ul class="library-list">'+rows+'</ul>') if rows else '<p class="muted">這個瀏覽器還沒有上傳的文件。</p>'
     clear='<button type="button" class="secondary" data-delete-doc>清除全部已上傳文件</button>' if rows else ""
     return f"""
-    <section class="library-board"><div><span class="tag">MAC 本機 · 不連外</span><h2>文件資料庫</h2>
+    <section class="library-board"><div><span class="tag">{label_mode}</span><h2>文件資料庫</h2>
     <p class="muted">可一次上傳多份。切到「我的暫存文件」時會一起搜尋，答案仍標出各自來源；內建練習不混入。</p>
     <div class="source-switch" aria-label="文件來源">{switch}</div></div>
     <div class="drop-zone" id="drop-zone"><form id="local-upload">
       <label for="doc-files">拖曳到這裡，或選擇文件</label>
       <input id="doc-files" type="file" multiple accept=".pdf,.docx,.txt,.md,.html,.htm" required>
       <button type="submit">上傳與建立索引</button></form>
-      <small>PDF（文字層）、DOCX、TXT、Markdown、HTML。單檔最多 5 MB，最多 8 份，另有限制解析後文字量。</small></div>
+      <small>PDF（文字層）、DOCX、TXT、Markdown、HTML。單檔最多 {max_upload_display()}，最多 8 份，另有限制解析後文字量。</small></div>
     <p id="upload-status" role="status" aria-live="polite"></p>
     <h3>我的上傳文件 · {len(docs)} 份</h3>{listed}{clear}<details><summary>本機暫存說明</summary>
     <p class="muted">原檔解析後不保留。索引暫存在記憶體，清空、閒置到期或重啟會清除。</p></details></section>
@@ -540,7 +560,7 @@ def table_upload(filename,*,generic=False):
     listed=('<p>已載入：<b>'+escape(filename)+'</b> <button id="table-clear" type="button" class="secondary">清除已上傳表格</button></p>') if filename else ""
     panel='''<section class="library-board"><h2>先放入資料表</h2><p>不用轉成 CSV。上傳後選產線，下面就會顯示計算結果。</p>
     <form id="table-upload"><label for="table-file">檔案</label><input type="file" id="table-file" accept=".csv,.tsv,.xlsx,.json,.jsonl,.ndjson" required><button>上傳並分析</button></form>
-    <small>文字 CSV／TSV、Excel、表列 JSON／JSONL，單檔 5 MB；只作本機暫存。</small>'''+listed+'''
+    <small>文字 CSV／TSV、Excel、表列 JSON／JSONL，單檔 {upload_limit}；只作{upload_space}暫存。</small>'''+listed+'''
     <p id="table-message" role="status"></p></section>
 <script>
 const upForm=document.querySelector('#table-upload'),tableMsg=document.querySelector('#table-message');
@@ -550,12 +570,13 @@ upForm.onsubmit=async e=>{
  const messages={file_over_5mb:'檔案超過 5 MB',need_line_and_output_plus_defects_or_rate:'找不到產線欄，或缺少產量加不良數／不良率欄',unsupported_table:'不支援這個格式',nested_json_requires_explicit_mapping:'巢狀 JSON 請先轉成平面表格'};
  try{const r=await fetch('/manufacturing/file',{method:'POST',headers:{'X-Demo-Local':'1','X-Demo-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'},body:f});
  const j=await r.json();if(r.ok){location.assign('/?sample=local#table-results');return;}
- tableMsg.textContent=messages[j.detail]||'這個檔案讀不到。請確認欄名、檔案是否完整。';
+ tableMsg.textContent=messages[j.detail]||([413,503].includes(r.status)&&typeof j.detail==='string'?j.detail:'這個檔案讀不到。請確認欄名、檔案是否完整。');
  }catch{tableMsg.textContent='目前連不到本機。';}finally{b.disabled=false;}
 };
 const tc=document.querySelector('#table-clear');
 if(tc)tc.onclick=async()=>{if(!window.confirm('確定清除這個分頁的暫存表格？原始檔不會被刪除。'))return;tc.disabled=true;try{const r=await fetch('/manufacturing/file',{method:'DELETE',headers:{'X-Demo-Local':'1'}});if(r.ok){location.assign('/');return;}}catch{}tableMsg.textContent='無法移除，請再試一次。';tc.disabled=false;};
 </script>'''
+    panel=panel.replace("{upload_limit}",max_upload_display()).replace("{upload_space}","雲端" if cloud_sessions.request_mode.get() else "本機")
     if generic:
         return panel.replace("/manufacturing/file","/analysis/file").replace("/?sample=local#table-results","/analysis?sample=local").replace("location.assign('/')","location.assign('/analysis')").replace("上傳後選產線，下面就會顯示計算結果。","上傳後，可自己選要算哪一欄、怎麼分組。")
     return panel
@@ -569,7 +590,7 @@ def analysis_table_library(files,active):
     return (f'<section class="library-board"><h2>表格資料庫</h2><p>可上傳多份，再選一份切換或勾多份上下疊加。同欄名才合併，不會改原始檔。</p>'
             '<form id="table-bulk-upload"><label for="bulk-table-file">選擇表格</label><input id="bulk-table-file" type="file" '
             'accept=".csv,.tsv,.xlsx,.json,.jsonl,.ndjson" multiple required><button>上傳表格</button></form>'
-            '<small>CSV、TSV、Excel、表列 JSON／JSONL；單檔 5 MB，最多 8 份且共 20,000 列。Excel 取活頁簿作用中的工作表。</small>'
+            f'<small>CSV、TSV、Excel、表列 JSON／JSONL；單檔 {max_upload_display()}，最多 8 份且共 20,000 列。Excel 取活頁簿作用中的工作表。</small>'
             f'<p id="bulk-table-status" role="status"></p>{picker}</section>'+BULK_TABLE_SCRIPT)
 
 
@@ -596,7 +617,7 @@ BULK_TABLE_SCRIPT = """<script>
        const response=await fetch('/analysis/file',{method:'POST',headers:{'X-Demo-Local':'1','X-Demo-Filename':encodeURIComponent(file.name),'Content-Type':'application/octet-stream'},body:file});
        const data=await response.json();
        if(response.ok)count++;
-       else failures.push(file.name+'：'+(errors[data.detail]||'檔案無法讀取'));
+       else failures.push(file.name+'：'+(errors[data.detail]||([413,503].includes(response.status)&&typeof data.detail==='string'?data.detail:'檔案無法讀取')));
      }catch{failures.push(file.name+'：無法連上本機');}
    }
    const report=[count?'已上傳 '+count+' 份。':'',...failures].filter(Boolean).join('；');
@@ -723,7 +744,7 @@ def universal_analysis(sample,filename,fields,selection,result,error,download_ur
 SETTINGS_SCRIPT="""
 <script>
 const pf=document.querySelector('#api-prefs'),configStatus=document.querySelector('#config-status');
-pf.onsubmit=async e=>{
+if(pf)pf.onsubmit=async e=>{
  e.preventDefault();const b=pf.querySelector('button');b.disabled=true;configStatus.textContent='儲存中…';
  try{const r=await fetch('/integration/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Demo-Local':'1'},body:JSON.stringify(Object.fromEntries(new FormData(pf)))});
   const v=await r.json();
@@ -735,6 +756,8 @@ pf.onsubmit=async e=>{
 </script>"""
 
 def model_preferences_panel(prefs):
+    if cloud_sessions.request_mode.get():
+        return '<section class="library-board"><h2>模型 API 設定</h2><p>雲端模型金鑰由擁有者在 Vercel 專案設定，這個網頁不接收金鑰、也不提供全站設定寫入。</p><p><a href="/owner/">登入私人模型區</a></p></section>'
     fields=[]
     titles={"embedding_url":"向量服務網址","embedding_model":"向量模型名稱","chat_url":"聊天／工具服務網址","chat_model":"聊天／工具模型名稱"}
     for k,t in titles.items():
@@ -846,6 +869,10 @@ def chat_switch(options,selected=""):
 
 
 def model_picker(settings,status,chat_options=(),selected_chat=""):
+    if cloud_sessions.request_mode.get():
+        return layout("/models","模型與連線","選擇已設定的雲端模型；本機模型只在 Mac 版可用。",
+                      '<section class="library-board"><h2>私人模型區</h2><p>公開資料檢索不需要模型。要用已設定的 API，請先由擁有者登入。</p>'
+                      '<p><a href="/owner/">登入私人模型區</a></p>'+chat_switch(chat_options,selected_chat)+'</section>')
     def options(name,choices):
         selected=settings[name] if status[name] else choices[0][0]
         return ''.join(model_option(k,label,selected,status[name]) for k,label in choices)
@@ -881,7 +908,9 @@ excelForm.onsubmit=async e=>{
   try{
     const r=await fetch('/extract/workbook',{method:'POST',headers:{'X-Demo-Local':'1','X-Demo-Filename':encodeURIComponent(file.name),'Content-Type':'application/octet-stream'},body:file});
     if(r.ok){location.assign('/extract/workbook#worksheets');return}
-    excelStatus.textContent='無法讀取。請確認是完整的 .xlsx、檔案小於 5 MB，且工作表未超過限制。';
+    const problem=await r.json();
+    excelStatus.textContent=[413,503].includes(r.status)&&typeof problem.detail==='string'&&problem.detail!=='file_over_5mb'
+      ?problem.detail:'無法讀取。請確認是完整的 .xlsx、檔案大小與工作表未超過限制。';
   }catch{excelStatus.textContent='無法連上本機。'}finally{b.disabled=false}
 };
 </script>"""
@@ -1019,7 +1048,7 @@ def agent_chat(question,source,work,sheet,result,model="bm25",has_upload=False,*
     model_options=''.join(model_option(k,label,displayed_model,embedding_ready) for k,label in AGENT_MODELS.items())
     model_select=f'<label for="agent-model">文件檢索方式</label><select id="agent-model" name="model">{model_options}</select>'
     model_note="本次使用："+result["model"] if result else "尚未查詢"
-    body=f'<div class="agent-layout"><section class="work-card"><div class="agent-identity"><span>{identity}</span><div><strong>資料助理</strong><small>{"內建合成示範" if source=="demo" else "本機資料 · 不連外"}</small><small class="agent-model-status">{escape(model_note)}</small></div></div>'
+    body=f'<div class="agent-layout"><section class="work-card"><div class="agent-identity"><span>{identity}</span><div><strong>資料助理</strong><small>{"內建合成示範" if source=="demo" else ("雲端暫存資料" if cloud_sessions.request_mode.get() else "本機資料 · 不連外")}</small><small class="agent-model-status">{escape(model_note)}</small></div></div>'
     body+='<p><a class="work-button" href="/agent/calc">讓 Agent 先規劃算式</a></p>'
     if result:
         body+=f'<p class="chat-question">{query}</p>'
@@ -1108,7 +1137,7 @@ def direct_file_picker(scope, accepts, *, multiple):
     formats="文件：PDF、Word、TXT、Markdown、HTML。表格："+("CSV、TSV、Excel、平面 JSON／JSONL" if multiple else "Excel .xlsx")
     return f'''<form class="direct-upload" data-upload-scope="{scope}"><label class="direct-upload-fallback" for="{scope}-upload-file">選擇檔案</label>
       <input id="{scope}-upload-file" type="file" accept="{accepts}"{" multiple" if multiple else ""} required>
-      <button type="button" data-upload-open hidden>上傳檔案</button><button type="submit" class="direct-upload-fallback">上傳</button></form><small>{formats}；單檔上限 5 MB。{"表格每次只保留一份。" if multiple else ""}</small>
+      <button type="button" data-upload-open hidden>上傳檔案</button><button type="submit" class="direct-upload-fallback">上傳</button></form><small>{formats}；單檔上限 {max_upload_display()}。{"表格每次只保留一份。" if multiple else ""}</small>
       <p id="{scope}-upload-message" role="status" aria-live="polite"></p>'''
 
 
@@ -1161,7 +1190,7 @@ DIRECT_UPLOAD_SCRIPT = """<script>
          const response=await fetch(url,{method:'POST',headers:{'X-Demo-Local':'1','X-Demo-Filename':encodeURIComponent(file.name),'Content-Type':'application/octet-stream'},body:file});
          const data=await response.json();
          if(response.ok){count++;last=ext==='xlsx'?'xlsx':data.format;}
-         else failed.push(file.name+'：'+(data.review_pages?.length?'第 '+data.review_pages.join('、')+' 頁需核對。':'')+(filenames[data.detail]||'檔案無法讀取'));
+         else failed.push(file.name+'：'+(data.review_pages?.length?'第 '+data.review_pages.join('、')+' 頁需核對。':'')+(filenames[data.detail]||([413,503].includes(response.status)&&typeof data.detail==='string'?data.detail:'檔案無法讀取')));
        }catch{failed.push(file.name+'：無法連上本機');}
      }
      if(count){
