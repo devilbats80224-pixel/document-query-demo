@@ -3,6 +3,7 @@ from pathlib import Path
 from html import escape
 from typing import Literal
 import studio
+import cloud_sessions
 import workbook_extract
 import calculation_plan
 from extract import PdfTextReviewRequired
@@ -22,6 +23,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from main import clean,report
 app=FastAPI(title="Offline Practice API")
+@app.exception_handler(cloud_sessions.CloudStorageError)
+async def storage_error(_request:Request,_error:cloud_sessions.CloudStorageError):
+    if str(_error) in {"cloud_store_session_reset","cloud_store_write_conflict"}:
+        return JSONResponse({"detail":"工作台已在另一個分頁更新或清除。請重新整理後再試。"},status_code=409,
+                            headers={"Cache-Control":"no-store"})
+    return JSONResponse({"detail":"雲端儲存暫時無法使用；未變更既有的資料。"},status_code=503,
+                        headers={"Cache-Control":"no-store"})
+
 demo_dir=Path(__file__).parent/"demo"
 sample_files={"csv":"CSV","tsv":"TSV","xlsx":"Excel .xlsx","jsonl":"JSONL"}
 default_table=clean(demo_dir/"production.csv")
@@ -29,7 +38,10 @@ class ReportQuery(BaseModel):
     model_config=ConfigDict(extra="forbid")
     line: str|None=Field(default=None,min_length=1,max_length=64)
 @app.get("/health")
-def health(): return {"status":"ok","mode":"local_offline"}
+def health():
+    if cloud_sessions.request_mode.get():
+        return {"status":"ok","mode":"vercel_cloud","uploads":cloud_sessions.backend() is not None,"local_models":False}
+    return {"status":"ok","mode":"local_offline"}
 @app.post("/report")
 def make_report(q:ReportQuery):
     r=report(default_table,q.line,0)
@@ -129,9 +141,9 @@ async def upload_table(request:Request):
         code=str(exc)
         if code not in {"unsupported_table","empty_file","too_many_rows","excel_expands_too_large","need_line_and_output_plus_defects_or_rate","blank_or_duplicate_column","nested_json_requires_explicit_mapping"}:code="invalid_table"
         raise HTTPException(422,code) from exc
-    sid=local_table.put(request.cookies.get(local_table.COOKIE),name,table)
+    sid=await run_in_threadpool(local_table.put,request.cookies.get(local_table.COOKIE),name,table)
     response=JSONResponse({"status":"ready","valid_rows":len(table["rows"])})
-    response.set_cookie(local_table.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict")
+    response.set_cookie(local_table.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict",secure=cloud_sessions.request_mode.get())
     return response
 
 @app.delete("/manufacturing/file")
@@ -147,7 +159,7 @@ def show_knowledge(request: Request,q: str|None=Query(default=None,min_length=1,
     if q is not None and not q.strip(): raise HTTPException(422,"question_required")
     q=q or ("DEMO-100 E-402" if source=="demo" else "")
     docs,chunks=local_library.snapshot(request.cookies.get(local_library.COOKIE))
-    engine=model_settings.local_load()["embedding"]
+    engine="character" if cloud_sessions.request_mode.get() else model_settings.local_load()["embedding"]
     embedding_ready=engine!="qwen" or local_models.available("embedding")
     return HTMLResponse(studio.knowledge(q,mode,source=source,docs=docs,chunks=chunks,embedding_engine=engine,embedding_ready=embedding_ready),headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"})
 
@@ -161,19 +173,21 @@ async def upload_knowledge(request:Request):
         content.extend(chunk)
     try:
         chunks=await run_in_threadpool(local_library.parse_file,name,bytes(content))
-        sid=local_library.add(request.cookies.get(local_library.COOKIE),name,chunks)
+        sid=await run_in_threadpool(local_library.add,request.cookies.get(local_library.COOKIE),name,chunks)
     except PdfTextReviewRequired as exc:
         return JSONResponse({"detail":"ocr_required","review_pages":exc.page_numbers,"accepted":False},status_code=422)
     except ValueError as exc:
         code=str(exc)
         if "ocr" in code:code="ocr_required"
-        elif code not in {"unsupported_file","empty_or_too_large","duplicate_name","library_full","no_extractable_content"}:
+        elif code not in {"unsupported_file","empty_or_too_large","duplicate_name","library_full","no_extractable_content","cloud_workspace_capacity"}:
             code="file_could_not_be_parsed"
         raise HTTPException(422,code) from exc
+    except cloud_sessions.CloudStorageError:
+        raise
     except (OSError,RuntimeError,PyPdfError) as exc:
         raise HTTPException(422,"file_could_not_be_parsed") from exc
     response=JSONResponse({"name":name,"chunks":len(chunks),"status":"indexed"})
-    response.set_cookie(local_library.COOKIE,sid,max_age=local_library.TTL,httponly=True,samesite="strict")
+    response.set_cookie(local_library.COOKIE,sid,max_age=local_library.TTL,httponly=True,samesite="strict",secure=cloud_sessions.request_mode.get())
     return response
 
 @app.delete("/knowledge/files")
@@ -240,9 +254,9 @@ async def upload_extraction_file(request:Request):
     except (ValueError,OSError,RuntimeError,PyPdfError) as exc:
         reason="ocr_required" if "ocr_required" in str(exc) else "unsupported_or_unreadable"
         raise HTTPException(422,reason) from exc
-    sid=local_table.put(request.cookies.get(FIELD_SESSION),name,(FIELD_FORMATS[suffix],pages))
+    sid=await run_in_threadpool(local_table.put,request.cookies.get(FIELD_SESSION),name,(FIELD_FORMATS[suffix],pages))
     response=JSONResponse({"status":"ready","name":name,"format":FIELD_FORMATS[suffix]})
-    response.set_cookie(FIELD_SESSION,sid,max_age=local_table.TTL,httponly=True,samesite="strict")
+    response.set_cookie(FIELD_SESSION,sid,max_age=local_table.TTL,httponly=True,samesite="strict",secure=cloud_sessions.request_mode.get())
     return response
 
 @app.get("/extract",response_class=HTMLResponse)
@@ -297,9 +311,9 @@ async def upload_workbook(request:Request):
         sheets=await run_in_threadpool(workbook_extract.parse,name,bytes(data))
     except (OSError,ValueError,KeyError,BadZipFile,SyntaxError,TypeError) as exc:
         raise HTTPException(422,"invalid_workbook") from exc
-    sid=local_table.put(request.cookies.get(workbook_extract.COOKIE),name,sheets)
+    sid=await run_in_threadpool(local_table.put,request.cookies.get(workbook_extract.COOKIE),name,sheets)
     response=JSONResponse({"status":"ready","sheets":list(sheets)})
-    response.set_cookie(workbook_extract.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict")
+    response.set_cookie(workbook_extract.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict",secure=cloud_sessions.request_mode.get())
     return response
 
 @app.get("/extract/workbook",response_class=HTMLResponse)
@@ -322,6 +336,7 @@ def show_workbook(request:Request,sheet:str|None=Query(default=None,max_length=6
     return HTMLResponse(studio.workbook_page(name,sheets or {},selected,field,result),headers={"Cache-Control":"no-store"})
 
 def workspace_query(request,q,source,sheet,model="bm25",*,embedding_ready=None):
+    if cloud_sessions.request_mode.get():embedding_ready=False
     work_name,work=local_table.get(request.cookies.get(workbook_extract.COOKIE))
     tab_name,tab=latest_analysis_table(request)
     _,mfg=local_table.get(request.cookies.get(local_table.COOKIE))
@@ -345,9 +360,9 @@ def show_agent(request:Request,line: str|None=Query(default=None,pattern=r"^[\w.
     source=source or "local"
     if q and source=="local" and calculation_plan.needs_plan(q):
         return RedirectResponse("/agent/calc?"+urlencode({"q":q}),status_code=303)
-    embedding_ready=local_models.available("embedding")
+    embedding_ready=not cloud_sessions.request_mode.get() and local_models.available("embedding")
     work,result=workspace_query(request,q,source,sheet,model,embedding_ready=embedding_ready)
-    return HTMLResponse(studio.agent_chat(q,source,work,sheet,result,model=model,embedding_ready=embedding_ready,chat_options=chat_options(),selected_chat=selected_chat_model(),has_upload=any(request.cookies.get(k) for k in (local_library.COOKIE,generic_analysis.COOKIE,local_table.COOKIE,workbook_extract.COOKIE))),headers={"Cache-Control":"no-store"})
+    return HTMLResponse(studio.agent_chat(q,source,work,sheet,result,model=model,embedding_ready=embedding_ready,chat_options=chat_options(request=request),selected_chat=selected_chat_model(),has_upload=any(request.cookies.get(k) for k in (local_library.COOKIE,generic_analysis.COOKIE,local_table.COOKIE,workbook_extract.COOKIE))),headers={"Cache-Control":"no-store"})
 
 @app.get("/agent/calc",response_class=HTMLResponse)
 def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
@@ -356,7 +371,7 @@ def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
                       group:str=Query(default="",max_length=250),unit:str=Query(default="",max_length=250),
                       sheet_pin:str=Query(default="",max_length=64),percent:bool=False,
                       run:bool=False,download:bool=False,format:Literal["json","html"]="json"):
-    chat_ready=local_models.available("chat")
+    chat_ready=not cloud_sessions.request_mode.get() and local_models.available("chat")
     name,table=latest_analysis_table(request)
     aliases=calculation_plan.map_columns(table) if table else {}
     pin=calculation_plan.pin(table) if table else ""
@@ -468,12 +483,13 @@ def save_model_prefs(request: Request, body:ModelPrefs):
 
 @app.get("/integration",response_class=HTMLResponse)
 def show_integration(request:Request,line: str|None=Query(default=None,min_length=1,max_length=64),source: Literal["demo","local"]="demo"):
+    prefs={} if cloud_sessions.request_mode.get() else model_settings.load()
     if line is None:
         _,work=local_table.get(request.cookies.get(workbook_extract.COOKIE))
-        return HTMLResponse(studio.api_playground(model_settings.load(),work,has_upload=bool(uploaded_tables(request) or work or local_library.snapshot(request.cookies.get(local_library.COOKIE))[0] or local_table.get(request.cookies.get(local_table.COOKIE))[0])),headers={"Cache-Control":"no-store"})
+        return HTMLResponse(studio.api_playground(prefs,work,has_upload=bool(uploaded_tables(request) or work or local_library.snapshot(request.cookies.get(local_library.COOKIE))[0] or local_table.get(request.cookies.get(local_table.COOKIE))[0])),headers={"Cache-Control":"no-store"})
     name,own=local_table.get(request.cookies.get(local_table.COOKIE))
     code,data=api_result(request,line,source)
-    return HTMLResponse(studio.integration(line,source,name,code,data,model_settings.load()),headers={"Cache-Control":"no-store"})
+    return HTMLResponse(studio.integration(line,source,name,code,data,prefs),headers={"Cache-Control":"no-store"})
 
 @app.get("/guide",response_class=HTMLResponse)
 def show_guide():
@@ -498,10 +514,10 @@ async def upload_generic_table(request:Request):
         code=str(exc)
         if code not in {"unsupported_table","empty_file","invalid_header","too_many_rows","excel_expands_too_large"}:code="invalid_table"
         raise HTTPException(422,code) from exc
-    try: sid=local_table.add_table(request.cookies.get(generic_analysis.COOKIE),filename,data)
+    try: sid=await run_in_threadpool(local_table.add_table,request.cookies.get(generic_analysis.COOKIE),filename,data)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     response=JSONResponse({"status":"ready","valid_rows":len(data["rows"]),"columns":data["fields"]})
-    response.set_cookie(generic_analysis.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict")
+    response.set_cookie(generic_analysis.COOKIE,sid,max_age=local_table.TTL,httponly=True,samesite="strict",secure=cloud_sessions.request_mode.get())
     return response
 
 @app.delete("/analysis/file")
@@ -597,18 +613,20 @@ class LocalChatRequest(BaseModel):
     model:str|None=Field(default=None,max_length=110)
 
 @app.get("/models",response_class=HTMLResponse)
-def get_local_models():
+def get_local_models(request:Request):
     status=model_status()
-    return HTMLResponse(studio.model_picker(model_settings.local_load(),status,chat_options(status["chat"]),selected_chat_model()),headers={"Cache-Control":"no-store"})
+    prefs={"chat":"off","embedding":"character"} if cloud_sessions.request_mode.get() else model_settings.local_load()
+    return HTMLResponse(studio.model_picker(prefs,status,chat_options(status["chat"],request=request),selected_chat_model()),headers={"Cache-Control":"no-store"})
 
 @app.get("/models/status")
 def get_model_status():
     return JSONResponse(model_status(),headers={"Cache-Control":"no-store"})
 
 def model_status():
-    return {kind:local_models.available(kind) for kind in local_models.MODELS}
+    return {kind:not cloud_sessions.request_mode.get() and local_models.available(kind) for kind in local_models.MODELS}
 
 def selected_chat_model():
+    if cloud_sessions.request_mode.get():return ""
     prefs=model_settings.load()
     hosted=prefs["chat_model"]
     provider=local_models.provider_id(prefs["chat_url"])
@@ -617,12 +635,16 @@ def selected_chat_model():
     return "local:qwen" if model_settings.local_load()["chat"]=="qwen" else ""
 
 
-def chat_options(local_ready=None):
-    if local_ready is None:local_ready=local_models.available("chat")
-    return [{"id":"local:qwen","label":"Qwen2.5-Coder 1.5B（本機）","ready":local_ready},
-            *[{"id":provider+":"+model,"label":model+"（"+label+" · 已列出，尚未試跑）","ready":True}
-              for provider,(_,label) in local_models.HOSTED_MODELS.items()
-              for model in local_models.provider_chat_models(provider)]]
+def chat_options(local_ready=None,*,request=None):
+    cloud=cloud_sessions.request_mode.get()
+    if cloud and not (request and getattr(request.state,"cloud_owner",False)):
+        return []
+    offline=[] if cloud else [{"id":"local:qwen","label":"Qwen2.5-Coder 1.5B（本機）",
+                              "ready":local_models.available("chat") if local_ready is None else local_ready}]
+    return offline+[
+        {"id":provider+":"+model,"label":model+"（"+label+" · 已列出，尚未試跑）","ready":True}
+        for provider,(_,label) in local_models.HOSTED_MODELS.items()
+        for model in local_models.provider_chat_models(provider)]
 
 
 @app.post("/models/settings")
@@ -639,6 +661,9 @@ def try_chat(request:Request,body:LocalChatRequest):
     if request.headers.get("x-demo-local")!="1":raise HTTPException(403,"local_action_required")
     if not body.question.strip():raise HTTPException(422,"question_required")
     requested=body.model
+    if cloud_sessions.request_mode.get():
+        if not getattr(request.state,"cloud_owner",False):raise HTTPException(401,"cloud_owner_login_required")
+        if requested is None or requested=="local:qwen":raise HTTPException(503,"cloud_local_model_unavailable")
     if requested is None and model_settings.local_load()["chat"]!="qwen":
         raise HTTPException(409,"chat_model_not_selected")
     try:

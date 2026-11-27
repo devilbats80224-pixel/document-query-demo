@@ -7,6 +7,7 @@ from threading import Lock
 from time import monotonic
 from zipfile import ZipFile
 import re
+import cloud_sessions
 from main import clean
 
 COOKIE="demo_table_session"
@@ -36,6 +37,12 @@ def _prune(now):
         if now-row[0]>TTL:_rows.pop(key,None)
 
 def put(sid,name,value):
+    store=cloud_sessions.active()
+    if store is not None:
+        is_new=store.key("table",sid) is None or store.read("table",sid) is None
+        if is_new:sid=store.new_id()
+        store.update("table",sid,lambda _:{"name":name,"value":value},allow_create=is_new)
+        return sid
     with _lock:
         now=monotonic();_prune(now)
         if sid not in _rows:sid=token_urlsafe(24)
@@ -45,12 +52,20 @@ def put(sid,name,value):
         return sid
 
 def get(sid):
+    if cloud_sessions.request_mode.get():
+        store=cloud_sessions.backend()
+        x=store.read("table",sid) if store else None
+        return (x["name"],x["value"]) if x else (None,None)
     with _lock:
         _prune(monotonic())
         x=_rows.get(sid)
         return (x[1],x[2]) if x else (None,None)
 
 def clear(sid):
+    store=cloud_sessions.active()
+    if store is not None:
+        store.delete("table",sid)
+        return
     with _lock:_rows.pop(sid,None)
 
 
@@ -62,12 +77,28 @@ def _collection(entry):
 
 
 def tables(sid):
+    if cloud_sessions.request_mode.get():
+        store=cloud_sessions.backend()
+        x=store.read("table",sid) if store else None
+        return {} if not x else (dict(x["value"]) if x["name"] is None else {x["name"]:x["value"]})
     with _lock:
         _prune(monotonic())
         return dict(_collection(_rows.get(sid)))
 
 
 def add_table(sid, name, value):
+    store=cloud_sessions.active()
+    if store is not None:
+        is_new=store.key("table",sid) is None or store.read("table",sid) is None
+        if is_new:sid=store.new_id()
+        def change(x):
+            items={} if not x else (dict(x["value"]) if x["name"] is None else {x["name"]:x["value"]})
+            if name in items:raise ValueError("duplicate_name")
+            if len(items)>=8 or sum(len(item["rows"]) for item in items.values())+len(value["rows"])>20000:
+                raise ValueError("table_library_full")
+            return {"name":None,"value":{**items,name:value}}
+        store.update("table",sid,change,allow_create=is_new)
+        return sid
     with _lock:
         now=monotonic()
         _prune(now)
@@ -86,6 +117,18 @@ def add_table(sid, name, value):
 
 
 def remove_table(sid, name):
+    store=cloud_sessions.active()
+    if store is not None:
+        if store.read("table",sid) is None:return False
+        class Missing(Exception):pass
+        def change(x):
+            items={} if not x else (dict(x["value"]) if x["name"] is None else {x["name"]:x["value"]})
+            if name not in items:raise Missing
+            items.pop(name)
+            return {"name":None,"value":items}
+        try:store.update("table",sid,change,allow_create=False)
+        except Missing:return False
+        return True
     with _lock:
         now=monotonic()
         _prune(now)

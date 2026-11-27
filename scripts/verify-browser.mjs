@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const evidence = resolve(process.env.VERIFY_EVIDENCE || 'verification-evidence');
 const temp = mkdtempSync(join(tmpdir(), 'demo-check-'));
+const cloudFixture = process.env.VERIFY_CLOUD_FIXTURE === '1';
 const chrome = [process.env.CHROME_BIN, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/usr/bin/google-chrome', '/usr/bin/chromium'].filter(Boolean).find(x => { try { accessSync(x); return true; } catch { return false; } });
 mkdirSync(evidence, {recursive:true});
@@ -28,7 +29,8 @@ try {
   let log='';
   let base=process.env.VERIFY_BASE_URL;
   if(!base) {
-  app=spawn(process.env.DEMO_PYTHON || 'python3',['-B','-m','uvicorn','api_fastapi:app','--host','127.0.0.1','--port','0'],{
+  const entry = cloudFixture ? ['cloud_browser_fixture:app','--app-dir','tests'] : ['api_fastapi:app'];
+  app=spawn(process.env.DEMO_PYTHON || 'python3',['-B','-m','uvicorn',...entry,'--host','127.0.0.1','--port','0'],{
     cwd:root,env:{PATH:process.env.PATH,HOME:temp,PYTHONNOUSERSITE:'1'},stdio:['ignore','pipe','pipe']
   });
   for(const stream of [app.stdout,app.stderr]) stream.on('data',chunk=>log+=chunk);
@@ -37,7 +39,7 @@ try {
   }
   assert.match(base,/^https?:\/\/127\.0\.0\.1:\d+$/,'Only inspect a loopback verification target');
   const health=await (await fetch(base+'/health')).json();
-  assert.equal(health.mode,'local_offline');
+  assert.equal(health.mode,cloudFixture?'vercel_cloud':'local_offline');
   browser=spawn(chrome,['--headless','--no-first-run','--no-default-browser-check','--disable-background-networking',
     '--disable-sync','--disable-dev-shm-usage','--remote-debugging-port=0','--remote-debugging-address=127.0.0.1',
     '--user-data-dir='+join(temp,'profile'),'--window-size=1365,960','about:blank'],{stdio:['ignore','ignore','pipe']});
@@ -184,7 +186,7 @@ try {
   await confirmTap('[data-delete-doc=""]',true,/確定清除全部/);
   await until(()=>run("document.querySelector('.library-board')?.innerText.includes('沒有上傳的文件')"),'mobile confirmed reset');
   writes.mobileUpload='320px: multi-file upload, individual removal, cancel and confirm reset passed';
-  if(!process.env.VERIFY_BASE_URL) {
+  if(!process.env.VERIFY_BASE_URL && !cloudFixture) {
     await cmd('Page.navigate',{url:base+'/agent?source=demo&q=PDF-200+ALARM-931'});
     await until(()=>run("document.readyState==='complete' && !!document.querySelector('[data-chat-switch]')"),'offline model controls');
     const modelUI=await run(`(() => {
