@@ -40,17 +40,20 @@ def chat(question):
     q=question.strip()
     if not q or len(q)>350:raise ValueError("invalid_question")
     r=_call("chat",{"temperature":0,"max_tokens":160,"messages":[{"role":"system","content":"用繁體中文簡短回答。沒有附件或查證工具；不要假稱看過文件。"},{"role":"user","content":q}]})
+    return _chat_content(r)
+
+def _chat_content(r):
     try:v=r["choices"][0]["message"]["content"]
     except (KeyError,IndexError,TypeError) as exc:raise ValueError("invalid_local_model_reply") from exc
     if not isinstance(v,str) or not v.strip():raise ValueError("invalid_local_model_reply")
     return v.strip()
 
-def embeddings(texts):
+def embeddings(texts,*,timeout=25):
     if not texts or len(texts)>33 or any(not t or len(t)>3500 for t in texts):raise ValueError("local_embedding_input_too_large")
     result=[]
     for i in range(0,len(texts),6):
         block=texts[i:i+6]
-        r=_call("embedding",{"input":block,"encoding_format":"float"})
+        r=_call("embedding",{"input":block,"encoding_format":"float"},timeout=timeout)
         try:
             data=sorted(r["data"],key=lambda x:x["index"])
             if [x["index"] for x in data]!=list(range(len(block))):raise ValueError
@@ -63,6 +66,91 @@ def embeddings(texts):
         except (KeyError,TypeError,ValueError) as exc:raise ValueError("invalid_local_embedding_reply") from exc
     if any(len(v)!=len(result[0]) for v in result):raise ValueError("invalid_local_embedding_reply")
     return result
+
+def available(kind):
+    """Exercise the configured local model with a bounded, synthetic request."""
+    try:
+        if kind=="chat":
+            r=_call("chat",{"temperature":0,"max_tokens":1,
+                            "messages":[{"role":"user","content":"Say OK."}]},timeout=2)
+            _chat_content(r)
+        elif kind=="embedding":
+            embeddings(["model readiness"],timeout=2)
+        else:
+            return False
+    except ValueError:
+        return False
+    return True
+
+
+HOSTED_MODELS={"openai":("LITEON_OPENAI_API_KEY","OpenAI"),"gemini":("LITEON_GEMINI_API_KEY","Gemini")}
+
+
+def provider_id(url):
+    from model_settings import PROVIDER_URLS
+    return next((kind for kind,known in PROVIDER_URLS.items() if url==known),None)
+
+
+def provider_configured(provider):
+    from model_settings import load
+    if provider not in HOSTED_MODELS:
+        return False
+    explicit=os.getenv("LITEON_CHAT_PROVIDERS","").split(",")
+    return (provider==provider_id(load()["chat_url"]) or provider in explicit) and bool(os.getenv(HOSTED_MODELS[provider][0],"").strip())
+
+
+def _provider_call(route,payload=None,*,provider="openai"):
+    """Only configured, exact HTTPS origins. Reject redirects and ambient proxies."""
+    from model_settings import PROVIDER_URLS
+    if provider not in HOSTED_MODELS or route not in {"/v1/models","/v1/chat/completions"}:
+        raise ValueError("invalid_provider_route")
+    key=os.getenv(HOSTED_MODELS[provider][0],"").strip()
+    if not key:
+        raise ValueError("provider_not_configured")
+    suffix=route.removeprefix("/v1")
+    endpoint=PROVIDER_URLS[provider].removesuffix("/chat/completions")+suffix
+    headers={"Authorization":"Bearer "+key,"Accept":"application/json"}
+    request=Request(endpoint,None if payload is None else json.dumps(payload).encode(),
+                    headers={**headers,"Content-Type":"application/json"})
+    try:
+        with build_opener(ProxyHandler({}),NoRedirect()).open(request,timeout=4 if payload is None else 30) as res:
+            body=res.read(1_000_001)
+        if len(body)>1_000_000:raise ValueError("provider_reply_too_large")
+        return json.loads(body)
+    except (OSError,HTTPError,URLError,TimeoutError,UnicodeError) as exc:
+        raise ValueError("provider_unavailable") from exc
+
+
+def provider_chat_models(provider="openai"):
+    import re
+    if not provider_configured(provider):
+        return []
+    try:
+        # /models lacks inference permission checks. Filter obvious non-chat models;
+        # a successful first generation is still required to confirm that choice.
+        data=_provider_call("/v1/models",**({} if provider=="openai" else {"provider":provider}))["data"]
+        ids={row["id"].removeprefix("models/") for row in data if isinstance(row,dict) and isinstance(row.get("id"),str)}
+        families=r"(?:gpt-\d|o\d).{0,95}" if provider=="openai" else r"gemini-.{1,95}"
+        return sorted(x for x in ids if re.fullmatch(families,x)
+                      and re.fullmatch(r"[A-Za-z0-9_.-]+",x)
+                      and not any(k in x for k in ("audio","realtime","transcri","tts","image","search","instruct","codex","deep-research","embed","robotics","live","computer-use","vision")))
+    except (ValueError,TypeError,KeyError):
+        return []
+
+
+def provider_chat(model,question,*,provider="openai"):
+    if model not in provider_chat_models(provider):
+        raise ValueError("provider_model_unavailable")
+    reply=_provider_call("/v1/chat/completions",{
+        "model":model,("max_completion_tokens" if provider=="openai" else "max_tokens"):512,
+        "messages":[{"role":"system","content":"用繁體中文回答。未提供任何附檔，不得宣稱讀過文件。"},
+                    {"role":"user","content":question}]},**({} if provider=="openai" else {"provider":provider}))
+    actual=reply.get("model") if isinstance(reply,dict) else None
+    if not isinstance(actual,str) or not 0<len(actual)<=120:
+        raise ValueError("provider_model_identity_unavailable")
+    return _chat_content(reply),actual
+
+
 
 def search(question,chunks,mode):
     from collections import Counter

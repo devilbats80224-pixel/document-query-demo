@@ -380,9 +380,10 @@ class MoreFileRoutes(unittest.TestCase):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url="http://test.invalid") as c:
                     headers={"X-Demo-Local":"1"}
                     self.assertEqual((await c.post("/models/chat",headers=headers,json={"question":"試聊"})).status_code,409)
-                    self.assertEqual((await c.post("/models/settings",headers=headers,json={"chat":"qwen","embedding":"qwen"})).status_code,200)
+                    with patch("local_models.available",return_value=True):
+                        self.assertEqual((await c.post("/models/settings",headers=headers,json={"chat":"qwen","embedding":"qwen"})).status_code,200)
                     self.assertIn("Qwen3 Embedding 0.6B",(await c.get("/models")).text)
-                    with patch("studio.local_models.search",side_effect=ValueError("not_running")):
+                    with patch("local_models.available",return_value=True), patch("studio.local_models.search",side_effect=ValueError("not_running")):
                         result=await c.get("/knowledge",params={"source":"demo","q":"DEMO-100"})
                         self.assertIn("本地向量模型目前無法完成查詢",result.text)
                         self.assertNotIn("找到可引用片段",result.text)

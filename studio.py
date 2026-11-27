@@ -352,11 +352,12 @@ def document_case_card(source,question,mode):
         tabs.append(f'<a class="case-tab case-{key}" href="{link}"{current}><span aria-hidden="true">{mark}</span>{label}</a>')
     return '<nav class="document-case-card" aria-label="三種示範結果">'+''.join(tabs)+'</nav>'
 
-def knowledge(question,mode,*,source="demo",docs=(),chunks=(),embedding_engine="character"):
+def knowledge(question,mode,*,source="demo",docs=(),chunks=(),embedding_engine="character",embedding_ready=True):
     corpus=retrieval.load_docs(DEMO/"docs") if source=="demo" else chunks
     semantic=embedding_engine=="qwen" and mode!="bm25"
     model_error=None
     try:
+        if semantic and not embedding_ready:raise ValueError("local_model_unavailable")
         hits=(local_models.search(question,corpus,mode) if semantic else local_hybrid(question,corpus,mode)) if question else []
     except ValueError as exc:
         model_error=str(exc);hits=[]
@@ -367,8 +368,11 @@ def knowledge(question,mode,*,source="demo",docs=(),chunks=(),embedding_engine="
         "bm25":("關鍵字搜尋（只用 BM25）","關鍵字檢索（BM25 排名）：比對詞彙並依相關性排序，不計算向量。"),
         "vector":(("語意搜尋" if semantic else "字元相似搜尋"),"字元向量（TF-IDF）：用相鄰兩字元為一組，比較餘弦相似度；不跑 BM25，也不呼叫語意模型。"),
     }
+    blocked=embedding_engine=="qwen" and not embedding_ready
+    input_mode="bm25" if blocked else mode
     radios="".join(f'<label class="mode"><input type="radio" name="mode" value="{key}"'+
-                   (' checked' if key==mode else '')+f'>{title}</label>' for key,(title,_) in labels.items())
+                   (' checked' if key==input_mode else '')+
+                   (' disabled> '+title+'（語意模型未連線）</label>' if blocked and key!="bm25" else f'>{title}</label>') for key,(title,_) in labels.items())
     source_label="內建示範文件" if source=="demo" else "我的上傳文件"
     body=f'<details class="upload-management"{" open" if source=="local" and not docs else ""}><summary>管理文件與上傳 · {source_label}</summary>'+library_panel(docs,source,mode)+'</details>'
     body+='<div class="document-layout"><section class="work-card query-card"><small class="section-index">02 · 再查詢</small><h2>查文件內容</h2>'
@@ -723,7 +727,7 @@ pf.onsubmit=async e=>{
  e.preventDefault();const b=pf.querySelector('button');b.disabled=true;configStatus.textContent='儲存中…';
  try{const r=await fetch('/integration/settings',{method:'POST',headers:{'Content-Type':'application/json','X-Demo-Local':'1'},body:JSON.stringify(Object.fromEntries(new FormData(pf)))});
   const v=await r.json();
-  if(r.ok){configStatus.textContent='已儲存在這台 Mac。沒有呼叫模型。';return;}
+  if(r.ok){configStatus.textContent=v.provider_called?(v.chat_models.length?'已儲存並找到 '+v.chat_models.length+' 個聊天模型。可到本地模型或智慧 Agent 選用。':'已儲存，但沒有取得可用聊天模型。請檢查伺服器 API 金鑰與權限。'):'已儲存，尚未連線。網頁自動探索支援指定的 OpenAI 和 Gemini API，且須在伺服器設定金鑰。';return;}
   const explain={invalid_embedding_url:'向量網址請用 HTTPS，結尾為 /embeddings。',invalid_chat_url:'聊天網址請用 HTTPS，結尾為 /chat/completions。',url_and_model_required:'每組的網址和模型名稱要一起填，或一起留空。',settings_not_saved:'寫入失敗，請檢查本機權限。'};
   configStatus.textContent=explain[v.detail]||'沒有儲存；請重看網址和模型名稱。';
  }catch{configStatus.textContent='無法連到本機。';}finally{b.disabled=false;}
@@ -735,7 +739,7 @@ def model_preferences_panel(prefs):
     titles={"embedding_url":"向量服務網址","embedding_model":"向量模型名稱","chat_url":"聊天／工具服務網址","chat_model":"聊天／工具模型名稱"}
     for k,t in titles.items():
         fields.append(f'<label class="api-setting-field" for="api-{k}"><span>{t}</span><input id="api-{k}" name="{k}" value="{escape(prefs.get(k,""),quote=True)}" maxlength="400" autocomplete="off"></label>')
-    setting='<section class="library-board"><h2>模型 API 設定</h2><p>向量模型負責索引和搜尋；聊天模型可整理答案或選工具。兩個不必填同一個。</p><form id="api-prefs">'+"".join(fields)+'<button>儲存 API 設定</button></form><p id="config-status" role="status"></p><small>只儲存網址與模型名稱，不呼叫外部服務、不把金鑰寫進網頁或交件檔。CLI 以明確開啟 API 的方式讀取設定；金鑰在終端無回顯輸入。</small></section>'
+    setting='<section class="library-board"><h2>模型 API 設定</h2><p>向量模型負責索引和搜尋；聊天模型可整理答案或選工具。兩個不必填同一個。</p><form id="api-prefs">'+"".join(fields)+'<button>儲存 API 設定</button></form><p id="config-status" role="status"></p><small>網頁支援 OpenAI 或 Gemini。聊天網址填 https://api.openai.com/v1/chat/completions 或 https://generativelanguage.googleapis.com/v1beta/openai/chat/completions，模型名稱可留空。伺服器設定金鑰後，儲存會自動讀取聊天模型清單。其他相容網址留作 CLI 設定；金鑰不填在網頁。</small></section>'
     return setting
 
 def integration(line,source,filename,code,data,prefs):
@@ -756,26 +760,114 @@ LOCAL_MODELS_SCRIPT="""
 <script>
 const lf=document.querySelector('#local-model-picker'),lm=document.querySelector('#local-model-msg'),tf=document.querySelector('#local-model-check'),tm=document.querySelector('#local-chat-result');
 lf.onsubmit=async e=>{e.preventDefault();const b=lf.querySelector('button');b.disabled=true;lm.textContent='儲存中…';
-try{const r=await fetch('/models/settings',{method:'POST',headers:{'X-Demo-Local':'1','Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(lf)))});lm.textContent=r.ok?'已儲存。文件問答下次查詢會用這個選擇。':'沒有儲存，請重試。';}catch{lm.textContent='沒有連上本機。';}finally{b.disabled=false;}};
+try{const r=await fetch('/models/settings',{method:'POST',headers:{'X-Demo-Local':'1','Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(lf)))});if(r.ok){window.location.reload();return;}lm.textContent='沒有儲存。模型可能未連線，請重新檢查。';}catch{lm.textContent='沒有連上本機。';}finally{b.disabled=false;}};
 tf.onsubmit=async e=>{e.preventDefault();const b=tf.querySelector('button');b.disabled=true;tm.textContent='本地模型正在回答…';
 try{const r=await fetch('/models/chat',{method:'POST',headers:{'X-Demo-Local':'1','Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(tf)))});const j=await r.json();tm.textContent=r.ok?j.answer:(j.detail==='chat_model_not_selected'?'請先選聊天模型後按儲存。':'暫時沒有收到本地模型回答。請先雙擊「啟動本地模型.command」。');}catch{tm.textContent='無法連到本機。';}finally{b.disabled=false;}};
 </script>"""
 
-def model_picker(settings):
+CHAT_SWITCH_SCRIPT="""
+<script>
+(()=>{
+ const form=document.querySelector('[data-chat-switch]');
+ if(!form)return;
+ const select=form.querySelector('select'),label=form.querySelector('[data-selected-chat]'),
+       status=form.querySelector('[data-generated-chat]'),current=form.querySelector('[data-used-chat]'),
+       button=form.querySelector('button'),question=form.querySelector('input');
+ const key='demo-selected-chat-model';
+ try {
+   const saved=localStorage.getItem(key);
+   if(saved!==null){
+     if(saved && ![...select.options].some(o=>o.value===saved)){
+       const prior=new Option(saved.replace(/^[^:]+:/,'')+'（已中斷或不再可用）',saved);
+       prior.disabled=true;select.add(prior);
+     }
+     if([...select.options].some(o=>o.value===saved))select.value=saved;
+   }
+ }catch{}
+ function refresh(){
+   const chosen=select.selectedOptions[0];
+   const enabled=!!chosen?.value&&!chosen.disabled;
+   const anyReady=[...select.options].some(o=>o.value&&!o.disabled);
+   label.textContent='目前選用聊天模型：'+(chosen?.value?chosen.textContent:'未選擇');
+   button.disabled=!enabled;
+   question.disabled=!enabled;
+   status.textContent=anyReady?'':'沒有可用模型，無法生成回答';
+ }
+ refresh();
+ select.onchange=()=>{try{localStorage.setItem(key,select.value);}catch{}refresh();current.textContent='本次實際使用：尚未生成';};
+ form.onsubmit=async(e)=>{
+   e.preventDefault();
+   const model=select.value;
+   if(!model||select.selectedOptions[0]?.disabled)return;
+   button.disabled=true;select.disabled=true;status.textContent='模型正在回答…';
+   current.textContent='本次實際使用：尚未生成';
+   try{
+     const r=await fetch('/models/chat',{method:'POST',headers:{'X-Demo-Local':'1','Content-Type':'application/json'},
+       body:JSON.stringify({model,question:question.value})});
+     const j=await r.json();
+     if(!r.ok){
+       status.textContent='所選模型目前不可用，無法生成回答。請重新檢查模型。';
+       const failed=select.selectedOptions[0];
+       if(failed&&(r.status===503||r.status===409)){failed.disabled=true;failed.textContent+='（未連線）';label.textContent='目前選用聊天模型：'+failed.textContent;
+         if(![...select.options].some(o=>o.value&&!o.disabled))status.textContent='沒有可用模型，無法生成回答。請重新檢查模型。';}
+       return;
+     }
+     current.textContent='本次實際使用：'+j.model;
+     status.textContent=j.answer;
+   }catch{status.textContent='無法連到模型服務，沒有生成回答。';}
+   finally{select.disabled=false;button.disabled=!select.value||select.selectedOptions[0]?.disabled;question.disabled=button.disabled;}
+ };
+})();
+</script>"""
+
+
+def chat_switch(options,selected=""):
+    choices=['<option value="">不使用聊天模型</option>']
+    options=list(options)
+    if selected and not any(row["id"]==selected for row in options):
+        options.append({"id":selected,"label":selected.split(":",1)[-1],"ready":False})
+    for option in options:
+        key=escape(option["id"],quote=True)
+        label=escape(option["label"])
+        attrs=(" selected" if option["id"]==selected else "")+("" if option["ready"] else " disabled")
+        suffix="" if option["ready"] else "（未連線）"
+        choices.append(f'<option value="{key}"{attrs}>{label}{suffix}</option>')
+    any_ready=any(row["ready"] for row in options)
+    enabled=any(row["id"]==selected and row["ready"] for row in options)
+    disabled="" if enabled else " disabled"
+    initial=next((row["label"] for row in options if row["id"]==selected),"未選擇")
+    empty="" if any_ready else "沒有可用模型，無法生成回答"
+    return f"""<form data-chat-switch><label for="chat-switch">聊天模型</label><select id="chat-switch">{''.join(choices)}</select>
+    <p data-selected-chat>目前選用聊天模型：{escape(initial)}</p><p><a href="">重新檢查模型</a></p>
+    <p>這裡是獨立的模型聊天，不會附上你上傳的文件或表格。若選雲端模型，只送出這裡輸入的問題。</p>
+    <label for="chat-question">聊天問題</label><input id="chat-question" required maxlength="350"{disabled}>
+    <button type="submit"{disabled}>生成回答</button><p data-used-chat>本次實際使用：尚未生成</p>
+    <pre data-generated-chat role="status">{empty}</pre></form>"""+CHAT_SWITCH_SCRIPT
+
+
+def model_picker(settings,status,chat_options=(),selected_chat=""):
     def options(name,choices):
-        return ''.join(f'<option value="{k}"'+(" selected" if settings[name]==k else "")+f'>{label}</option>' for k,label in choices)
+        selected=settings[name] if status[name] else choices[0][0]
+        return ''.join(model_option(k,label,selected,status[name]) for k,label in choices)
+    def status_text(kind):
+        return "可用" if status[kind] else "未連線或未通過測試"
+    can_chat=status["chat"] and settings["chat"]=="qwen"
+    chat_disabled="" if can_chat else " disabled"
+    saved_unavailable=any(settings[kind]=="qwen" and not status[kind] for kind in status)
+    selection_note="<p>先前選的模型目前不可用；系統沒有更改原設定。請重新連線，或明確儲存免模型選項。</p>" if saved_unavailable else ""
     chat=options("chat",[("off","不使用聊天模型"),("qwen","Qwen2.5-Coder 1.5B（本機）")])
     embed=options("embedding",[("character","本機字元向量（免模型，隨時可用）"),("qwen","Qwen3 Embedding 0.6B（本機語意模型）")])
     return layout("/models","本地模型","離線也能分別決定誰找文件、誰回答。外部 API 另外設定。",f"""
     <div class="stepbar"><span>01 雙擊「啟動本地模型.command」</span><span>02 選模型</span><span>03 儲存或試聊</span></div>
     <section class="library-board"><h2>選擇並儲存</h2>
+      <p>聊天模型：{status_text("chat")} · 語意模型：{status_text("embedding")}。<a href="/models">重新檢查模型</a></p>{selection_note}
       <form id="local-model-picker"><label>文件檢索 <select name="embedding">{embed}</select></label><label>聊天 <select name="chat">{chat}</select></label><button>儲存本地模型</button></form>
       <p id="local-model-msg" role="status"></p><small>選本地語意模型後，在文件頁用「混合搜尋」或「語意搜尋」。關鍵字檢索（BM25 排名）不呼叫模型。字元向量（TF-IDF）以相鄰兩字元為一組並比較餘弦相似度，不是 Qwen3 語意向量。</small>
     </section>
     <section class="library-board"><h2>測試聊天模型</h2><p>只是試聊，不會讀你上傳的附件，也不冒充有來源的回答。</p>
-      <form id="local-model-check"><label for="probe">問題</label><input id="probe" name="question" required maxlength="350" value="請只回答：本機模型測試"><button>問本地模型</button></form>
+      <form id="local-model-check"><label for="probe">問題</label><input id="probe" name="question" required maxlength="350" value="請只回答：本機模型測試"{chat_disabled}><button{chat_disabled}>問本地模型</button></form>
       <pre id="local-chat-result" role="status"></pre>
-    </section><p><a href="/integration">外部 API 的設定入口</a></p>"""+LOCAL_MODELS_SCRIPT)
+    </section><section class="library-board"><h2>切換聊天模型</h2>{chat_switch(chat_options,selected_chat)}</section><p><a href="/integration">外部 API 的設定入口</a></p>"""+LOCAL_MODELS_SCRIPT)
 
 
 WORKBOOK_SCRIPT="""<script>
@@ -833,7 +925,7 @@ AGENT_MODELS={
     "qwen":"混合搜尋：關鍵字＋語意（Qwen3 Embedding 0.6B）",
 }
 
-def query_tools(question,source,sheet,work_name,work,tab_name,tab,mfg,docs,report,model="bm25"):
+def query_tools(question,source,sheet,work_name,work,tab_name,tab,mfg,docs,report,model="bm25",*,embedding_ready=None):
     import generic_analysis
     import workbook_extract
     q=question.strip()
@@ -892,6 +984,8 @@ def query_tools(question,source,sheet,work_name,work,tab_name,tab,mfg,docs,repor
             ids={t for t in retrieval.tokens(question) if re.search("[a-z]",t) and re.search("[0-9]",t)}
             eligible=any(ids.issubset(set(retrieval.tokens(x["text"]))) for x in corpus)
             try:
+                ready=local_models.available("embedding") if embedding_ready is None else embedding_ready
+                if not ready:raise ValueError("local_model_unavailable")
                 hits=local_models.search(question,corpus,"hybrid") if eligible else []
             except ValueError:
                 return resp(tool,"model_unavailable","未能取得所選本機模型的結果。請確認模型已啟動，或改用免模型模式。",used="Qwen3 Embedding 0.6B（未完成）")
@@ -907,21 +1001,29 @@ def query_tools(question,source,sheet,work_name,work,tab_name,tab,mfg,docs,repor
     return resp("未選用工具","unsupported","不支援這個問題。可查文件、擷取 Excel 欄位或分析表格。")
 
 
-def agent_chat(question,source,work,sheet,result,model="bm25",has_upload=False):
+def model_option(key,label,selected,ready):
+    disabled=key=="qwen" and not ready
+    attrs=" disabled" if disabled else " selected" if selected==key else ""
+    suffix="（未連線）" if disabled else ""
+    return f'<option value="{key}"{attrs}>{label}{suffix}</option>'
+
+
+def agent_chat(question,source,work,sheet,result,model="bm25",has_upload=False,*,embedding_ready=True,chat_options=(),selected_chat=""):
+    displayed_model="bm25" if model=="qwen" and not embedding_ready else model
     query=escape(question or "",quote=True)
-    ex=''.join(f'<a href="/agent?{urlencode({"q":q,"source":"demo","model":model})}">{label}</a>' for label,q in EXAMPLES)
+    ex=''.join(f'<a href="/agent?{urlencode({"q":q,"source":"demo","model":displayed_model})}">{label}</a>' for label,q in EXAMPLES)
     src=''.join(f'<option value="{k}"{" selected" if k==source else ""}>{label}</option>' for k,label in (("local","我的資料"),("demo","內建示範")))
     ws=''.join(f'<option{" selected" if k==sheet else ""}>{escape(k)}</option>' for k in (work or {}))
     sheet_field=f'<label>Excel 工作表 <select name="sheet">{ws}</select></label>' if ws else ""
     identity=figma_theme.icon("spark")
-    model_options=''.join(f'<option value="{k}"{" selected" if k==model else ""}>{label}</option>' for k,label in AGENT_MODELS.items())
+    model_options=''.join(model_option(k,label,displayed_model,embedding_ready) for k,label in AGENT_MODELS.items())
     model_select=f'<label for="agent-model">文件檢索方式</label><select id="agent-model" name="model">{model_options}</select>'
     model_note="本次使用："+result["model"] if result else "尚未查詢"
     body=f'<div class="agent-layout"><section class="work-card"><div class="agent-identity"><span>{identity}</span><div><strong>資料助理</strong><small>{"內建合成示範" if source=="demo" else "本機資料 · 不連外"}</small><small class="agent-model-status">{escape(model_note)}</small></div></div>'
     body+='<p><a class="work-button" href="/agent/calc">讓 Agent 先規劃算式</a></p>'
     if result:
         body+=f'<p class="chat-question">{query}</p>'
-        body+=f'<div class="plain-step"><div><small>回答</small><p>{escape(result["answer"])}</p></div></div>'
+        body+=f'<div class="plain-step"><div><small>查詢結果（非模型生成）</small><p>{escape(result["answer"])}</p></div></div>'
         body+=fold("查看這次使用的工具",f'<p>{escape(result["tool"])}</p>')
     body+=f'<form class="agent-composer" action="/agent"><label for="agent-source">資料來源</label><select id="agent-source" name="source">{src}</select>{model_select}{sheet_field}<small class="agent-tool-note">關鍵字檢索（BM25 排名）比對詞彙；字元向量（TF-IDF）比對字元組；Qwen3 Embedding 比對語意。表格與欄位擷取不使用這些檢索方式。</small><div class="search-input"><label for="agent-q">問題</label><input name="q" id="agent-q" maxlength="250" required value="{query}" placeholder="輸入想查、擷取或計算的內容"><button>送出</button></div></form><details><summary>內建示範（選用）</summary><div class="samples">{ex}</div></details></section>'
     evidence=result["evidence"] if result else []
@@ -945,6 +1047,7 @@ if(agentJsonLink&&agentJson&&typeof URL.createObjectURL==='function'){
     if has_upload:body+=clear_uploads_button("agent")
     body+='<p class="muted">文件會查所有已上傳來源；表格助手預設用最近上傳的一份。需要堆疊多份表格，請到「數據分析」圈選。</p>'
     body+='<p><a href="/knowledge?source=local">上傳文件</a> · <a href="/analysis?sample=local">上傳表格</a> · <a href="/extract">選欄擷取</a></p></aside></div>'
+    body+='<section class="work-card"><h2>模型聊天</h2>'+chat_switch(chat_options,selected_chat)+'</section>'
     return layout("/agent","用白話拆解每次回答","看清楚你問什麼、程式查了什麼，以及答案來自哪裡。",body)
 
 
@@ -1081,9 +1184,10 @@ DIRECT_UPLOAD_SCRIPT = """<script>
 </script>"""
 
 
-def calculation_page(question,filename,table,aliases,proposal,note,pin,result,planner):
+def calculation_page(question,filename,table,aliases,proposal,note,pin,result,planner,*,chat_ready=True):
     question=escape(question or "",quote=True)
-    planner_options=''.join(f'<option value="{k}"{" selected" if k==planner else ""}>{v}</option>'
+    displayed_planner=planner if chat_ready else "rules"
+    planner_options=''.join(model_option(k,v,displayed_planner,chat_ready)
         for k,v in (("rules","自動建議（不使用模型）"),("qwen","規則不夠時試本機模型（Qwen2.5-Coder）")))
     body=f"""<div class="agent-layout"><section class="work-card">
     <span class="section-index">01 · 說明要算什麼</span><h2>讓 Agent 先想算式</h2>

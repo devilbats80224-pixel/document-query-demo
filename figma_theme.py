@@ -127,3 +127,37 @@ CSS += """
 #choose-tables input[type=checkbox]{min-width:auto;flex:none}
 #choose-tables li{flex-wrap:wrap}
 """
+
+# Keep the mobile document viewport fixed to the device width. Wide data
+# previews scroll in their existing wrappers, not across the whole page.
+CSS += """
+@media(max-width:730px){
+  .shell{display:block}
+  .side{position:static;height:auto;overflow:visible;padding:10px 12px;gap:4px}
+  .side .nav-link,.nav-advanced summary{min-height:44px;display:inline-flex;align-items:center}
+  .nav-advanced{margin:0}
+  .nav-advanced[open]{width:100%}
+  .nav-advanced summary{display:list-item;align-content:center}
+  .topbar{height:auto;min-height:38px;flex-wrap:wrap;gap:4px 12px;padding-block:5px}
+  main{min-width:0;overflow-wrap:anywhere}
+  main :is(section,article,details,form,fieldset,label,.main-wrap,.library-list li)>*{min-width:0}
+  main :is(input,select,textarea,button){max-width:100%;font-size:16px}
+  main :is(input,select,textarea,button,.work-button,summary){min-height:44px}
+  main :is(input[type=radio],input[type=checkbox]){min-height:0}
+  main :is(form,.library-list li){flex-wrap:wrap}
+  main label:has(select){max-width:100%}
+  main input[type=file]{width:100%}
+  main :is(pre,[style*="overflow:auto"]){max-width:100%;overflow:auto}
+  .drop-zone{padding-inline:.65rem}
+  .step-rail{gap:8px}
+  .step{min-height:44px}
+  .step small{display:none}
+  .step:not(:last-child)::after{display:none}
+  .formula-tab span{min-height:44px;display:flex;align-items:center;white-space:normal}
+}
+@media(max-width:380px){
+  main{padding-inline:12px}
+  .search-input{flex-wrap:wrap}
+  .search-input input{width:100%;flex-basis:100%}
+}
+"""

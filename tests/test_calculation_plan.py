@@ -55,7 +55,7 @@ class Planning(TestCase):
 
     def test_model_plan_is_validated_and_not_executed(self):
         from unittest.mock import patch
-        with TestClient(app) as c:
+        with TestClient(app) as c, patch("local_models.available",return_value=True):
             c.post("/analysis/file",headers={"X-Demo-Local":"1","X-Demo-Filename":"store.csv"},
                    content="部門,計畫,實際,單位\nA,10,8,個\n".encode())
             with patch("local_models.calculation_proposal",return_value={"formula":"SUM(A).__class__","group":"","unit":"","percent":False}):
