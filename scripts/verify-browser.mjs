@@ -108,6 +108,21 @@ try {
   assert.equal(none.count,0);
   await screenshot('no-supported-answer');
   writes.noAnswer={status:none.answer,sources:0};
+  // User-reported grouped amount result must not render in the 29px step-number column.
+  for (const width of [1365,390]) {
+    await cmd('Emulation.setDeviceMetricsOverride',{width,height:850,deviceScaleFactor:1,mobile:width<600});
+    const amountURL=base+'/agent?source=demo&model=bm25&q='+encodeURIComponent('加總 金額');
+    await cmd('Page.navigate',{url:amountURL});
+    await until(()=>run("document.readyState==='complete' && !!document.querySelector('.agent-layout .plain-step p')"),'grouped amount result');
+    const dims=await run(`(() => {
+      const step=document.querySelector('.agent-layout .plain-step');
+      const text=step.querySelector('p');
+      return {width:step.getBoundingClientRect().width,textWidth:text.getBoundingClientRect().width,result:text.textContent};
+    })()`);
+    assert(dims.result.includes('1550') && dims.result.includes('TWD'),'query must show the expected result');
+    assert(dims.textWidth>=dims.width*.65 && dims.textWidth>=175,`Agent answer too narrow at ${width}px: ${dims.textWidth}px out of ${dims.width}px`);
+  }
+  writes.agentAmountLayout='Grouped monetary answer uses the result pane at 1365 and 390px';
   const mobile = [];
   const mobileRoutes = ['/workspace','/knowledge?source=local&mode=bm25','/analysis','/agent','/','/extract','/models','/integration','/guide'];
   for (const width of [320,390,430]) {
