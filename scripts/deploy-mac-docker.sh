@@ -17,9 +17,9 @@ run=$("$gh_bin" run list -R "$repo" --workflow verify-demo.yml --branch main --c
 test "$(cat "$artifact/COMMIT")" = "$main"
 test "$("$gh_bin" api "repos/$repo/git/ref/heads/main" --jq .object.sha)" = "$main"
 docker load -i "$artifact/document-query-demo-arm64.tar.gz"
-id=$(cat "$artifact/IMAGE_ID")
-[[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]]
-test "$(docker image inspect "document-query-demo:$main" --format '{{.Id}} {{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$id arm64 $main"
+id=$(docker image inspect "document-query-demo:$main" --format '{{.Id}}')
+test "$(docker image inspect "document-query-demo:$main" --format '{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}')" = "arm64 $main"
+python3 "$(dirname "$0")/check-oci-image.py" "$artifact/document-query-demo-arm64.tar.gz" "$(cat "$artifact/IMAGE_ID")" "$id" "$main"
 
 # Do not touch similarly named or foreign containers. Preserve an old instance
 # for rollback; its in-memory uploaded documents are not migrated on upgrades.
