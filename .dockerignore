@@ -1,0 +1,6 @@
+**
+!*.py
+!requirements-docker.txt
+!demo/
+!demo/**
+!Dockerfile

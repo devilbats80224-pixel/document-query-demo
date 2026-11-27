@@ -1,7 +1,7 @@
 """On-device llama.cpp integration. No remote URL configuration or silent fallback."""
 from pathlib import Path
 from math import hypot,isfinite
-import json
+import json,os
 from urllib.request import build_opener,ProxyHandler,HTTPRedirectHandler,Request
 from urllib.error import HTTPError,URLError
 
@@ -12,14 +12,23 @@ MODELS={"chat":("Qwen2.5-Coder 1.5B","liteon-qwen-chat",8766,"/v1/chat/completio
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self,*args,**kwargs):raise ValueError("local_model_unexpected_redirect")
 
+def _transport():
+    mode=os.getenv("LITEON_MODEL_TRANSPORT","loopback")
+    if mode=="loopback":
+        return "127.0.0.1",BASE_DIR/"loopback-token"
+    if mode=="docker-desktop":
+        return "host.docker.internal",Path("/run/secrets/demo-model-token")
+    raise ValueError("invalid_local_model_transport")
+
 def _call(kind,payload,*,timeout=25):
     if kind not in MODELS:raise ValueError("unknown_local_model")
     _,alias,port,route=MODELS[kind]
     try:
-        secret=(BASE_DIR/"loopback-token").read_text().strip()
+        host,token=_transport()
+        secret=token.read_text().strip()
         if not secret:raise ValueError("local_model_not_running")
         p={**payload,"model":alias}
-        req=Request(f"http://127.0.0.1:{port}{route}",json.dumps(p,ensure_ascii=False).encode(),
+        req=Request(f"http://{host}:{port}{route}",json.dumps(p,ensure_ascii=False).encode(),
                     method="POST",headers={"Content-Type":"application/json","Authorization":"Bearer "+secret})
         with build_opener(ProxyHandler({}),NoRedirect()).open(req,timeout=timeout) as res:
             body=res.read(5_000_001)

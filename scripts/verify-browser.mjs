@@ -25,12 +25,16 @@ let app, browser, sock;
 try {
   assert(chrome && typeof WebSocket === 'function', 'Need Chrome and Node 22+');
   let log='';
+  let base=process.env.VERIFY_BASE_URL;
+  if(!base) {
   app=spawn(process.env.DEMO_PYTHON || 'python3',['-B','-m','uvicorn','api_fastapi:app','--host','127.0.0.1','--port','0'],{
     cwd:root,env:{PATH:process.env.PATH,HOME:temp,PYTHONNOUSERSITE:'1'},stdio:['ignore','pipe','pipe']
   });
   for(const stream of [app.stdout,app.stderr]) stream.on('data',chunk=>log+=chunk);
   app.on('error',e=>log+=e.message);
-  const base=await until(()=>log.match(/Uvicorn running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1], 'app startup');
+  base=await until(()=>log.match(/Uvicorn running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1], 'app startup');
+  }
+  assert.match(base,/^https?:\/\/127\.0\.0\.1:\d+$/,'Only inspect a loopback verification target');
   const health=await (await fetch(base+'/health')).json();
   assert.equal(health.mode,'local_offline');
   browser=spawn(chrome,['--headless','--no-first-run','--no-default-browser-check','--disable-background-networking',
