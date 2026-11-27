@@ -34,7 +34,7 @@ PR 的既有必過工作會跑 `ruff check .`（全庫 Python 語法與未定義
 
 ### Vercel 雲端版（獨立入口；不取代 Mac Docker）
 
-Vercel 專案用同一個 GitHub 儲存庫，Root Directory 保持根目錄，框架選 **FastAPI**。按 [Vercel FastAPI 官方說明](https://vercel.com/docs/frameworks/backend/fastapi) 由 `pyproject.toml` 指到 `vercel_app:app`，依賴鎖定在 `requirements.txt`。Mac Docker 仍以原本的 `api_fastapi:app` 啟動，不吃這些設定。合併 PR 的 GitHub Actions 須先全綠，再用 Vercel 對應 commit 的部署驗收；預覽先不帶任何金鑰。
+Vercel 專案用同一個 GitHub 儲存庫，Root Directory 保持根目錄，框架選 **FastAPI**。按 [Vercel FastAPI 官方說明](https://vercel.com/docs/frameworks/backend/fastapi) 由 `pyproject.toml` 指到 `vercel_app:app`，依賴鎖定在同一份 `pyproject.toml` 的 `[project]`。Mac Docker 仍以原本的 `api_fastapi:app` 啟動，不吃這些設定。合併 PR 的 GitHub Actions 須先全綠，再用 Vercel 對應 commit 的部署驗收；預覽先不帶任何金鑰。
 
 - 公開入口只查內建合成文件和示範製造資料，**不接收上傳、不儲存文件、不連 Mac 本機模型**。完整工作台仍在 Mac Docker。
 - 不設定以下環境變數也能展示公開版；擁有者聊天預設關閉，不會向模型供應商送出請求。
