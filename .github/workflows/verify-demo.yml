@@ -21,6 +21,7 @@ jobs:
         with:
           node-version: '22'
       - run: python -m pip install -r requirements-optional.txt
+      - run: bash -n scripts/deploy-mac-docker.sh
       - run: python -B -m unittest discover -s tests -v
       - run: node scripts/verify-browser.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

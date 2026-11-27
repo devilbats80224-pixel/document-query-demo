@@ -59,9 +59,10 @@ if docker inspect "$name" >/dev/null 2>&1; then
     docker stop "$name" >/dev/null
     docker rename "$name" "$old"
 fi
-if ! docker run -d --name "$name" --restart unless-stopped "${args[@]}" -p '127.0.0.1:8875:8775' "$id" || ! healthy "$base"; then
-    docker rm -f "$name" >/dev/null 2>&1 || true
-    if [ -n "$old" ]; then
+new=''
+if ! new=$(docker run -d --name "$name" --restart unless-stopped "${args[@]}" -p '127.0.0.1:8875:8775' "$id") || ! healthy "$base"; then
+    if [[ "$new" =~ ^[0-9a-f]{64}$ ]]; then docker rm -f "$new" >/dev/null 2>&1 || true; fi
+    if [ -n "$old" ] && ! docker inspect "$name" >/dev/null 2>&1; then
         docker rename "$old" "$name"
         docker start "$name" >/dev/null
     fi
