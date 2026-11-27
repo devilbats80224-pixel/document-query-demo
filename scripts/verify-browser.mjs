@@ -22,6 +22,7 @@ async function until(fn, label) {
   throw new Error('Timed out: '+label+(error ? ' '+error.message : ''));
 }
 let app, browser, sock;
+let browserLog='';
 try {
   assert(chrome && typeof WebSocket === 'function', 'Need Chrome and Node 22+');
   let log='';
@@ -39,9 +40,15 @@ try {
   assert.equal(health.mode,'local_offline');
   browser=spawn(chrome,['--headless','--no-first-run','--no-default-browser-check','--disable-background-networking',
     '--disable-sync','--disable-dev-shm-usage','--remote-debugging-port=0','--remote-debugging-address=127.0.0.1',
-    '--user-data-dir='+join(temp,'profile'),'--window-size=1365,960','about:blank'],{stdio:'ignore'});
-  browser.on('error',e=>log+=e.message);
-  const devPort=await until(()=>readFileSync(join(temp,'profile','DevToolsActivePort'),'utf8').split('\n')[0],'Chrome startup');
+    '--user-data-dir='+join(temp,'profile'),'--window-size=1365,960','about:blank'],{stdio:['ignore','ignore','pipe']});
+  browser.stderr.on('data',chunk=>browserLog=(browserLog+chunk).slice(-12000));
+  // Keep the independent browser check fail-closed, but surface what failed
+  // rather than timing out on a file after Chrome has already exited.
+  const stopped=new Promise((_,reject)=>{
+    browser.once('error',reject);
+    browser.once('exit',(code,signal)=>reject(new Error('Chrome exited: '+(signal||code)+' '+browserLog.trim())));
+  });
+  const devPort=await Promise.race([until(()=>readFileSync(join(temp,'profile','DevToolsActivePort'),'utf8').split('\n')[0],'Chrome startup'),stopped]);
   const tabs=await until(async ()=>(await (await fetch('http://127.0.0.1:'+devPort+'/json/list')).json()).find(x=>x.type==='page'),'Chrome tab');
   sock=new WebSocket(tabs.webSocketDebuggerUrl);
   await until(()=>sock.readyState===WebSocket.OPEN,'browser connection');
@@ -178,6 +185,7 @@ try {
   writeFileSync(join(evidence,'report.json'),JSON.stringify({status:'pass',...writes},null,2)+'\n');
   console.log('DOCUMENT_BROWSER_VERIFICATION_PASS');
 } catch(e) {
+  if(browserLog) writeFileSync(join(evidence,'chrome-stderr.log'),browserLog);
   writeFileSync(join(evidence,'report.json'),JSON.stringify({status:'fail',...writes,error:e.message},null,2)+'\n');
   throw e;
 } finally {
