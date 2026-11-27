@@ -147,7 +147,9 @@ def show_knowledge(request: Request,q: str|None=Query(default=None,min_length=1,
     if q is not None and not q.strip(): raise HTTPException(422,"question_required")
     q=q or ("DEMO-100 E-402" if source=="demo" else "")
     docs,chunks=local_library.snapshot(request.cookies.get(local_library.COOKIE))
-    return HTMLResponse(studio.knowledge(q,mode,source=source,docs=docs,chunks=chunks,embedding_engine=model_settings.local_load()["embedding"]),headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"})
+    engine=model_settings.local_load()["embedding"]
+    embedding_ready=engine!="qwen" or local_models.available("embedding")
+    return HTMLResponse(studio.knowledge(q,mode,source=source,docs=docs,chunks=chunks,embedding_engine=engine,embedding_ready=embedding_ready),headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer"})
 
 @app.post("/knowledge/files")
 async def upload_knowledge(request:Request):
@@ -319,7 +321,7 @@ def show_workbook(request:Request,sheet:str|None=Query(default=None,max_length=6
         raise HTTPException(422,"select_sheet_and_columns")
     return HTMLResponse(studio.workbook_page(name,sheets or {},selected,field,result),headers={"Cache-Control":"no-store"})
 
-def workspace_query(request,q,source,sheet,model="bm25"):
+def workspace_query(request,q,source,sheet,model="bm25",*,embedding_ready=None):
     work_name,work=local_table.get(request.cookies.get(workbook_extract.COOKIE))
     tab_name,tab=latest_analysis_table(request)
     _,mfg=local_table.get(request.cookies.get(local_table.COOKIE))
@@ -330,7 +332,7 @@ def workspace_query(request,q,source,sheet,model="bm25"):
         tab_name="finance.csv（示範）"
         tab=generic_analysis.read(demo_dir/"finance.csv")
     result=studio.query_tools(q,source,sheet,work_name,work,tab_name,tab,
-                       mfg if source=="local" else default_table,docs,report,model=model) if q else None
+                       mfg if source=="local" else default_table,docs,report,model=model,embedding_ready=embedding_ready) if q else None
     return work,result
 
 @app.get("/agent",response_class=HTMLResponse)
@@ -343,8 +345,9 @@ def show_agent(request:Request,line: str|None=Query(default=None,pattern=r"^[\w.
     source=source or "local"
     if q and source=="local" and calculation_plan.needs_plan(q):
         return RedirectResponse("/agent/calc?"+urlencode({"q":q}),status_code=303)
-    work,result=workspace_query(request,q,source,sheet,model)
-    return HTMLResponse(studio.agent_chat(q,source,work,sheet,result,model=model,has_upload=any(request.cookies.get(k) for k in (local_library.COOKIE,generic_analysis.COOKIE,local_table.COOKIE,workbook_extract.COOKIE))),headers={"Cache-Control":"no-store"})
+    embedding_ready=local_models.available("embedding")
+    work,result=workspace_query(request,q,source,sheet,model,embedding_ready=embedding_ready)
+    return HTMLResponse(studio.agent_chat(q,source,work,sheet,result,model=model,embedding_ready=embedding_ready,chat_options=chat_options(),selected_chat=selected_chat_model(),has_upload=any(request.cookies.get(k) for k in (local_library.COOKIE,generic_analysis.COOKIE,local_table.COOKIE,workbook_extract.COOKIE))),headers={"Cache-Control":"no-store"})
 
 @app.get("/agent/calc",response_class=HTMLResponse)
 def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
@@ -353,6 +356,7 @@ def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
                       group:str=Query(default="",max_length=250),unit:str=Query(default="",max_length=250),
                       sheet_pin:str=Query(default="",max_length=64),percent:bool=False,
                       run:bool=False,download:bool=False,format:Literal["json","html"]="json"):
+    chat_ready=local_models.available("chat")
     name,table=latest_analysis_table(request)
     aliases=calculation_plan.map_columns(table) if table else {}
     pin=calculation_plan.pin(table) if table else ""
@@ -387,6 +391,7 @@ def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
             proposal,note=calculation_plan.propose(q,table,aliases)
             if planner=="qwen" and not proposal and "篩選條件" not in note and "不唯一" not in note:
                 try:
+                    if not chat_ready:raise ValueError("local_model_unavailable")
                     group_fields=[k for k in table["fields"] if k not in aliases.values()]
                     unit_fields=[k for k in table["fields"] if k.casefold() in calculation_plan.UNIT_NAMES]
                     d=local_models.calculation_proposal(q,aliases,group_fields,unit_fields)
@@ -405,7 +410,7 @@ def agent_calculation(request:Request,q:str=Query(default="",max_length=250),
     except ValueError as e:
         if download:raise HTTPException(422,str(e)) from e
         note=str(e)
-    return HTMLResponse(studio.calculation_page(q,name,table,aliases,proposal,note,pin,result,planner),
+    return HTMLResponse(studio.calculation_page(q,name,table,aliases,proposal,note,pin,result,planner,chat_ready=chat_ready),
                         headers={"Cache-Control":"no-store"})
 
 @app.get("/api/workspace/query")
@@ -455,6 +460,10 @@ def save_model_prefs(request: Request, body:ModelPrefs):
     try:model_settings.save(body.model_dump())
     except ValueError as exc:raise HTTPException(422,str(exc)) from exc
     except OSError as exc:raise HTTPException(500,"settings_not_saved") from exc
+    provider=local_models.provider_id(body.chat_url.strip())
+    if provider:
+        return {"status":"saved","provider_called":local_models.provider_configured(provider),
+                "chat_models":local_models.provider_chat_models(provider)}
     return {"status":"saved","provider_called":False}
 
 @app.get("/integration",response_class=HTMLResponse)
@@ -585,21 +594,64 @@ class LocalModelPrefs(BaseModel):
 class LocalChatRequest(BaseModel):
     model_config=ConfigDict(extra="forbid")
     question:str=Field(min_length=1,max_length=350)
+    model:str|None=Field(default=None,max_length=110)
 
 @app.get("/models",response_class=HTMLResponse)
 def get_local_models():
-    return HTMLResponse(studio.model_picker(model_settings.local_load()),headers={"Cache-Control":"no-store"})
+    status=model_status()
+    return HTMLResponse(studio.model_picker(model_settings.local_load(),status,chat_options(status["chat"]),selected_chat_model()),headers={"Cache-Control":"no-store"})
+
+@app.get("/models/status")
+def get_model_status():
+    return JSONResponse(model_status(),headers={"Cache-Control":"no-store"})
+
+def model_status():
+    return {kind:local_models.available(kind) for kind in local_models.MODELS}
+
+def selected_chat_model():
+    prefs=model_settings.load()
+    hosted=prefs["chat_model"]
+    provider=local_models.provider_id(prefs["chat_url"])
+    if hosted and provider:
+        return provider+":"+hosted
+    return "local:qwen" if model_settings.local_load()["chat"]=="qwen" else ""
+
+
+def chat_options(local_ready=None):
+    if local_ready is None:local_ready=local_models.available("chat")
+    return [{"id":"local:qwen","label":"Qwen2.5-Coder 1.5B（本機）","ready":local_ready},
+            *[{"id":provider+":"+model,"label":model+"（"+label+" · 已列出，尚未試跑）","ready":True}
+              for provider,(_,label) in local_models.HOSTED_MODELS.items()
+              for model in local_models.provider_chat_models(provider)]]
+
 
 @app.post("/models/settings")
 def save_local_models(request:Request,body:LocalModelPrefs):
     if request.headers.get("x-demo-local")!="1":raise HTTPException(403,"local_action_required")
-    model_settings.local_save(body.model_dump())
+    prefs=body.model_dump()
+    if any(prefs[kind]=="qwen" and not local_models.available(kind) for kind in prefs):
+        raise HTTPException(503,"local_model_unavailable")
+    model_settings.local_save(prefs)
     return {"status":"saved"}
 
 @app.post("/models/chat")
 def try_chat(request:Request,body:LocalChatRequest):
     if request.headers.get("x-demo-local")!="1":raise HTTPException(403,"local_action_required")
-    if model_settings.local_load()["chat"]!="qwen":raise HTTPException(409,"chat_model_not_selected")
-    try:answer=local_models.chat(body.question)
+    if not body.question.strip():raise HTTPException(422,"question_required")
+    requested=body.model
+    if requested is None and model_settings.local_load()["chat"]!="qwen":
+        raise HTTPException(409,"chat_model_not_selected")
+    try:
+        if requested is None or requested=="local:qwen":
+            if not local_models.available("chat"):raise ValueError("local_model_unavailable")
+            answer=local_models.chat(body.question)
+            label="Qwen2.5-Coder 1.5B"
+        elif ":" in requested:
+            provider,model=requested.split(":",1)
+            if provider not in local_models.HOSTED_MODELS:raise ValueError("unknown_chat_model")
+            answer,actual_model=local_models.provider_chat(model,body.question,provider=provider)
+            label=actual_model+"（"+local_models.HOSTED_MODELS[provider][1]+"）"
+        else:
+            raise ValueError("unknown_chat_model")
     except ValueError as exc:raise HTTPException(503,"local_model_unavailable") from exc
-    return {"model":"Qwen2.5-Coder 1.5B","answer":answer,"citations":[]}
+    return {"model":label,"answer":answer,"citations":[]}

@@ -4,6 +4,12 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlsplit
 
+PROVIDER_URLS={
+    "openai":"https://api.openai.com/v1/chat/completions",
+    "gemini":"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+}
+
+
 FIELDS=("embedding_url","embedding_model","chat_url","chat_model")
 def path():
     return Path(os.getenv("LITEON_SETTINGS_PATH",str(Path.home()/".config"/"liteon-demo"/"model-settings.json")))
@@ -19,7 +25,7 @@ def save(data):
     out={k:v.strip() for k,v in data.items()}
     for kind,endpoint in (("embedding","/embeddings"),("chat","/chat/completions")):
         url=out[kind+"_url"]; model=out[kind+"_model"]
-        if bool(url)!=bool(model):raise ValueError("url_and_model_required")
+        if bool(url)!=bool(model) and not (kind=="chat" and url in PROVIDER_URLS.values()):raise ValueError("url_and_model_required")
         if url:
             u=urlsplit(url)
             if u.scheme!="https" or not u.hostname or u.username or u.password or u.query or u.fragment or not u.path.endswith(endpoint) or len(url)>400:

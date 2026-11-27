@@ -15,7 +15,7 @@ class DoneCards(TestCase):
                          c.get("/knowledge",params={"source":"demo","q":"DEMO-100 交接時限"}).text)
 
     def test_agent_picker_calls_chosen_real_tool_and_labels_this_result(self):
-        with TestClient(app) as c, patch("local_models.search",return_value=[]) as pick:
+        with TestClient(app) as c, patch("local_models.available",return_value=True), patch("local_models.search",return_value=[]) as pick:
             a=c.get("/agent")
             self.assertIn('id="agent-model"',a.text)
             self.assertIn("Qwen3 Embedding 0.6B",a.text)
@@ -29,7 +29,7 @@ class DoneCards(TestCase):
             self.assertIn('class="api-setting-field"',c.get("/integration").text)
 
     def test_agent_fails_clearly_when_model_offline_no_silent_fallback(self):
-        with TestClient(app) as c, patch("local_models.search",side_effect=ValueError("local_model_not_running")):
+        with TestClient(app) as c, patch("local_models.available",return_value=True), patch("local_models.search",side_effect=ValueError("local_model_not_running")):
             r=c.get("/api/workspace/query",params={"source":"demo","q":"PDF-200 ALARM-931","model":"qwen"})
             self.assertEqual(r.json()["status"],"model_unavailable")
             self.assertEqual(r.json()["evidence"],[])
