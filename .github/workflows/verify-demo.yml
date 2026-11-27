@@ -21,6 +21,16 @@ jobs:
         with:
           node-version: '22'
       - run: python -m pip install -r requirements-optional.txt
+      - name: Install pinned lint and type-check tools
+        run: |
+          python3 -m pip install ruff==0.17.6
+          npm install --global pyright@1.1.414
+      - name: Lint repository source
+        run: ruff check .
+      - name: Check Python types
+        run: pyright --project pyrightconfig.json
+      - name: Check browser test JavaScript syntax
+        run: node --check scripts/verify-browser.mjs
       - run: bash -n scripts/deploy-mac-docker.sh
       - run: python -B -m unittest discover -s tests -v
       - run: node scripts/verify-browser.mjs

@@ -16,6 +16,11 @@ class Planning(TestCase):
             pin=re.search(r'name="sheet_pin" value="([^"]+)"',page.text).group(1)
             out=c.get("/agent/calc",params={"run":"true","download":"true","sheet_pin":pin,
                         "q":"各產品毛利率是多少","formula":"(SUM(A)-SUM(B))/SUM(A)","group":"產品","unit":"幣別","percent":"true"})
+            html = c.get("/agent/calc", params={k: v for k, v in out.request.url.params.items()
+                                               if k != "download"})
+            self.assertEqual(200, html.status_code, html.text)
+            self.assertIn("40.00%", html.text)
+            self.assertIn("80.00%", html.text)
             self.assertEqual(200,out.status_code,out.text)
             result=out.json()
             self.assertEqual([(x["group"],x["unit"],x["ratio"]) for x in result["results"]],
