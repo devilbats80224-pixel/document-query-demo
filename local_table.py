@@ -39,9 +39,9 @@ def _prune(now):
 def put(sid,name,value):
     store=cloud_sessions.active()
     if store is not None:
-        if store.key("table",sid) is None or store.read("table",sid) is None:
-            sid=store.new_id()
-        store.update("table",sid,lambda _:{"name":name,"value":value})
+        is_new=store.key("table",sid) is None or store.read("table",sid) is None
+        if is_new:sid=store.new_id()
+        store.update("table",sid,lambda _:{"name":name,"value":value},allow_create=is_new)
         return sid
     with _lock:
         now=monotonic();_prune(now)
@@ -89,15 +89,15 @@ def tables(sid):
 def add_table(sid, name, value):
     store=cloud_sessions.active()
     if store is not None:
-        if store.key("table",sid) is None or store.read("table",sid) is None:
-            sid=store.new_id()
+        is_new=store.key("table",sid) is None or store.read("table",sid) is None
+        if is_new:sid=store.new_id()
         def change(x):
             items={} if not x else (dict(x["value"]) if x["name"] is None else {x["name"]:x["value"]})
             if name in items:raise ValueError("duplicate_name")
             if len(items)>=8 or sum(len(item["rows"]) for item in items.values())+len(value["rows"])>20000:
                 raise ValueError("table_library_full")
             return {"name":None,"value":{**items,name:value}}
-        store.update("table",sid,change)
+        store.update("table",sid,change,allow_create=is_new)
         return sid
     with _lock:
         now=monotonic()
@@ -126,7 +126,7 @@ def remove_table(sid, name):
             if name not in items:raise Missing
             items.pop(name)
             return {"name":None,"value":items}
-        try:store.update("table",sid,change)
+        try:store.update("table",sid,change,allow_create=False)
         except Missing:return False
         return True
     with _lock:

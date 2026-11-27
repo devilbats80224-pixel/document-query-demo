@@ -25,6 +25,9 @@ from main import clean,report
 app=FastAPI(title="Offline Practice API")
 @app.exception_handler(cloud_sessions.CloudStorageError)
 async def storage_error(_request:Request,_error:cloud_sessions.CloudStorageError):
+    if str(_error) in {"cloud_store_session_reset","cloud_store_write_conflict"}:
+        return JSONResponse({"detail":"工作台已在另一個分頁更新或清除。請重新整理後再試。"},status_code=409,
+                            headers={"Cache-Control":"no-store"})
     return JSONResponse({"detail":"雲端儲存暫時無法使用；未變更既有的資料。"},status_code=503,
                         headers={"Cache-Control":"no-store"})
 
@@ -176,7 +179,7 @@ async def upload_knowledge(request:Request):
     except ValueError as exc:
         code=str(exc)
         if "ocr" in code:code="ocr_required"
-        elif code not in {"unsupported_file","empty_or_too_large","duplicate_name","library_full","no_extractable_content"}:
+        elif code not in {"unsupported_file","empty_or_too_large","duplicate_name","library_full","no_extractable_content","cloud_workspace_capacity"}:
             code="file_could_not_be_parsed"
         raise HTTPException(422,code) from exc
     except cloud_sessions.CloudStorageError:

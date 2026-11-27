@@ -18,7 +18,7 @@ class SimulatedRedis(cloud_sessions.RedisSessionBackend):
         lua,arity,key,expected,encoded,ttl=items[1:]
         assert "redis.call('GET'" in lua
         assert arity==1 and ttl==7200
-        if self.slots.get(key,"")!=expected:
+        if self.slots.get(key,"")[:32]!=expected:
             return 0
         self.slots[key]=encoded
         return 1
@@ -41,3 +41,35 @@ class CloudSessions(unittest.TestCase):
     def test_rejects_unsafe_store_configuration_by_default(self):
         with patch.dict("os.environ",{"UPSTASH_REDIS_REST_URL":"https://evil.example","UPSTASH_REDIS_REST_TOKEN":"not-real"},clear=True):
             self.assertIsNone(cloud_sessions.backend())
+
+    def test_previous_large_state_is_not_sent_again_in_compare_and_set(self):
+        slots={}
+        payload_sizes=[]
+        class Measured(SimulatedRedis):
+            def command(self,*items):
+                if items[0]=="EVAL":
+                    import json
+                    payload_sizes.append(len(json.dumps(items,ensure_ascii=False).encode("utf-8")))
+                return super().command(*items)
+        connection=Measured(slots)
+        sid=connection.new_id()
+        payload={"d":("\\\\"*860_000)}
+        connection.update("table",sid,lambda _:payload)
+        connection.update("table",sid,lambda _:payload)
+        self.assertLess(max(payload_sizes),8_000_000)
+
+    def test_reset_cannot_be_undone_by_a_late_write_retry(self):
+        slots={}
+        class Resetting(SimulatedRedis):
+            triggered=False
+            def command(self,*items):
+                if items[0]=="EVAL" and not self.triggered and items[4]:
+                    self.triggered=True
+                    self.slots.pop(items[3],None)
+                return super().command(*items)
+        connection=Resetting(slots)
+        sid=connection.new_id()
+        connection.update("documents",sid,lambda _:{"doc":1})
+        with self.assertRaises(cloud_sessions.CloudStorageError):
+            connection.update("documents",sid,lambda _:{"doc":2})
+        self.assertIsNone(connection.read("documents",sid))

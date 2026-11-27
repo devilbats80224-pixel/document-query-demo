@@ -54,15 +54,15 @@ def snapshot(sid):
 def add(sid,name,chunks):
     store=cloud_sessions.active()
     if store is not None:
-        if store.key("documents",sid) is None or store.read("documents",sid) is None:
-            sid=store.new_id()
+        is_new=store.key("documents",sid) is None or store.read("documents",sid) is None
+        if is_new:sid=store.new_id()
         def change(existing):
             docs=dict(existing or {})
             if name in docs:raise ValueError("duplicate_name")
             if len(docs)>=DOC_LIMIT or sum(map(len,docs.values()))+len(chunks)>CHUNK_LIMIT:
                 raise ValueError("library_full")
             return {**docs,name:chunks}
-        store.update("documents",sid,change)
+        store.update("documents",sid,change,allow_create=is_new)
         return sid
     now=monotonic()
     with _lock:
@@ -96,7 +96,7 @@ def remove(sid,name):
             if name not in docs:raise Missing
             docs.pop(name)
             return docs
-        try:store.update("documents",sid,change)
+        try:store.update("documents",sid,change,allow_create=False)
         except Missing:return False
         return True
     with _lock:

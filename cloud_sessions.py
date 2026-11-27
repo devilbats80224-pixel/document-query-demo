@@ -17,8 +17,9 @@ MAX_STATE_BYTES=3_500_000
 SID=re.compile(r"[A-Za-z0-9_-]{32}")
 UPSTASH_HOST=re.compile(r"[a-z0-9-]+\.upstash\.io")
 TAG="_cloud_type"
-CAS="""local now = redis.call('GET',KEYS[1]) or ''
-if now ~= ARGV[1] then return 0 end
+CAS="""local now = redis.call('GET',KEYS[1])
+local revision = now and string.sub(now,1,32) or ''
+if revision ~= ARGV[1] then return 0 end
 redis.call('SET',KEYS[1],ARGV[2],'EX',ARGV[3]); return 1"""
 
 
@@ -77,7 +78,7 @@ class RedisSessionBackend:
         return f"document-demo-session-v1:{bucket}:{sid}"
 
     def command(self,*items):
-        req=Request(self.url,data=json.dumps(items,separators=(",",":")).encode("utf-8"),
+        req=Request(self.url,data=json.dumps(items,ensure_ascii=False,separators=(",",":")).encode("utf-8"),
                     headers={"Authorization":"Bearer "+self.token,"Content-Type":"application/json"})
         try:
             with build_opener(ProxyHandler({}),NoRedirect()).open(req,timeout=4) as rsp:
@@ -93,30 +94,35 @@ class RedisSessionBackend:
     def read(self,bucket,sid) -> dict[str,Any] | None:
         key=self.key(bucket,sid)
         if key is None:return None
-        body=self.command("GET",key)
-        return self.decode(body)
+        _,data=self.decode(self.command("GET",key))
+        return data
 
-    def decode(self,body) -> dict[str,Any] | None:
-        if body is None:return None
-        if not isinstance(body,str) or len(body.encode("utf-8"))>MAX_STATE_BYTES:
+    def decode(self,body) -> tuple[str,dict[str,Any] | None]:
+        if body is None:return "",None
+        if (not isinstance(body,str) or len(body)<34 or len(body.encode("utf-8"))>MAX_STATE_BYTES+33
+                or body[32]!=":" or SID.fullmatch(body[:32]) is None):
             raise CloudStorageError("cloud_store_invalid_state")
         try:
-            value=_unsafe(json.loads(body))
+            value=_unsafe(json.loads(body[33:]))
             if not isinstance(value,dict):raise CloudStorageError("cloud_store_invalid_state")
-            return value
+            return body[:32],value
         except (ValueError,TypeError,KeyError) as exc:
             raise CloudStorageError("cloud_store_invalid_state") from exc
 
-    def update(self,bucket,sid,change):
+    def update(self,bucket,sid,change,*,allow_create=True):
         key=self.key(bucket,sid)
         if key is None:raise CloudStorageError("cloud_store_bad_session")
         for _ in range(4):
-            old=self.command("GET",key)
-            value=change(self.decode(old))
+            revision,old=self.decode(self.command("GET",key))
+            if old is None and not allow_create:
+                raise CloudStorageError("cloud_store_session_reset")
+            if old is not None:allow_create=False
+            value=change(old)
             encoded=json.dumps(_safe(value),ensure_ascii=False,separators=(",",":"),allow_nan=False)
             if len(encoded.encode("utf-8"))>MAX_STATE_BYTES:
                 raise ValueError("cloud_workspace_capacity")
-            if self.command("EVAL",CAS,1,key,old or "",encoded,TTL)==1:
+            # The previous revision is fixed-size regardless of workspace size.
+            if self.command("EVAL",CAS,1,key,revision,self.new_id()+":"+encoded,TTL)==1:
                 return value
         raise CloudStorageError("cloud_store_write_conflict")
 
